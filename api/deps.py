@@ -7,19 +7,25 @@ name to its root via the registry, 404ing if unknown.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from fastapi import Depends, Query
 
 from .services.claude import ClaudeService
 from .services.execution import ExecutionManager, SSEBus
+from .services.operations import OperationManager
 from .storage import NotFoundError, StorageService
 
 # Process-wide singletons.
 _storage = StorageService()
 _bus = SSEBus()
-_claude = ClaudeService(_storage)
+# PROMPTLY_MODEL overrides the default model (handy for cheap smoke tests).
+_claude = ClaudeService(
+    _storage, default_model=os.environ.get("PROMPTLY_MODEL", "claude-opus-4-8")
+)
 _execution = ExecutionManager(_storage, _bus)
+_operations = OperationManager(_storage, _claude)
 
 
 def get_storage() -> StorageService:
@@ -32,6 +38,10 @@ def get_claude() -> ClaudeService:
 
 def get_execution() -> ExecutionManager:
     return _execution
+
+
+def get_operations() -> OperationManager:
+    return _operations
 
 
 @dataclass

@@ -4,12 +4,15 @@
 import { getActiveProject } from "../store";
 import type {
   AddressResponse,
+  ChatHistory,
+  ChatMessage,
   Comment,
   CommentAnchor,
   DependencyGraph,
   DocOut,
   DocType,
   MetadataEntry,
+  PermissionsConfig,
   ProgressState,
   ProjectDescriptor,
   TaskStatus,
@@ -156,6 +159,21 @@ export const api = {
       method: "PUT",
       scoped: true,
       body: patch,
+    }),
+  getChat: (collection: Collection, id: string) =>
+    request<ChatHistory>(`/${collection}/${id}/chat`, { scoped: true }),
+  sendChat: (collection: Collection, id: string, message: string) =>
+    request<ChatMessage>(`/${collection}/${id}/chat`, {
+      method: "POST",
+      scoped: true,
+      body: { message },
+    }),
+  getPermissions: () => request<PermissionsConfig>("/permissions", { scoped: true }),
+  putPermissions: (config: PermissionsConfig) =>
+    request<PermissionsConfig>("/permissions", {
+      method: "PUT",
+      scoped: true,
+      body: config,
     }),
   address: (collection: Collection, id: string) =>
     request<AddressResponse>(`/${collection}/${id}/address`, {

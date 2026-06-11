@@ -1,28 +1,47 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from api.deps import get_claude
+from api.deps import get_claude, get_operations, get_storage
 from api.main import create_app
 from api.services.claude import GeneratedDoc
 
 
 class FakeClaude:
-    async def generate_document(self, *, root, project, prompt, type, depends_on=None,
-                                name_hint=None):
-        return GeneratedDoc(
-            name=name_hint or "Generated " + type.value if hasattr(type, "value") else "Generated",
-            description="auto description",
-            body=f"# {prompt}\n\nGenerated body for: {prompt}",
-        )
+    """Used for the synchronous `/address` path (still calls claude directly)."""
 
     async def address_comments(self, *, root, project, body, comments):
         return body + "\n\n<!-- addressed -->"
+
+
+class FakeOperations:
+    """Runs 'background' work synchronously so tests are deterministic (no real CLI,
+    no event-loop timing). Mirrors OperationManager's interface."""
+
+    def __init__(self, storage):
+        self.storage = storage
+
+    def start_generation(self, root, project, entry_id, collection, *, prompt, type,
+                         depends_on, name_hint):
+        tval = type.value if hasattr(type, "value") else type
+        self.storage.finalize_generation(
+            root, project, entry_id,
+            body=f"# {prompt}\n\nGenerated body for: {prompt}",
+            display_name=name_hint or f"Generated {tval}",
+            description="auto description",
+        )
+
+    def start_chat(self, root, project, collection, entry_id, *, message):
+        self.storage.append_chat_message(
+            root, project, collection, entry_id, "assistant", f"ack: {message}",
+        )
+        self.storage.clear_operation(root, project, collection, entry_id)
 
 
 @pytest.fixture
 def client(promptly_home, root):
     app = create_app()
     app.dependency_overrides[get_claude] = lambda: FakeClaude()
+    app.dependency_overrides[get_operations] = lambda: FakeOperations(get_storage())
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -74,13 +93,36 @@ def test_unknown_active_project_404(client):
 def test_create_doc_via_prompt(client, proj):
     r = client.post("/docs", params=q(proj),
                     json={"prompt": "write API notes", "type": "doc", "name": "Notes"})
-    assert r.status_code == 201, r.text
+    assert r.status_code == 202, r.text  # async: placeholder returned
     entry = r.json()
     assert entry["file"] == "docs/notes.md"
 
+    # FakeOperations finalized synchronously, so the body is already filled in.
     got = client.get(f"/docs/{entry['id']}", params=q(proj)).json()
     assert "Generated body" in got["body"]
+    assert got["meta"]["operation"] is None
     assert got["comments"] == []
+
+
+def test_doc_chat(client, proj):
+    e = client.post("/docs", params=q(proj),
+                    json={"prompt": "p", "type": "doc", "name": "D"}).json()
+    r = client.post(f"/docs/{e['id']}/chat", params=q(proj), json={"message": "tighten it"})
+    assert r.status_code == 202
+    assert r.json()["role"] == "user"
+    hist = client.get(f"/docs/{e['id']}/chat", params=q(proj)).json()
+    roles = [m["role"] for m in hist["messages"]]
+    assert roles == ["user", "assistant"]
+    assert "ack: tighten it" in hist["messages"][1]["content"]
+
+
+def test_permissions_config_defaults_and_update(client, proj):
+    cfg = client.get("/permissions", params=q(proj)).json()
+    assert "Write" in cfg["generation"]["deny"]
+    cfg["additionalReadDirs"] = ["/extra"]
+    r = client.put("/permissions", params=q(proj), json=cfg)
+    assert r.status_code == 200
+    assert client.get("/permissions", params=q(proj)).json()["additionalReadDirs"] == ["/extra"]
 
 
 def test_create_project_spec_and_flag(client, proj):

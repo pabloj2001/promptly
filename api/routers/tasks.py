@@ -9,19 +9,22 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 
 from ..deps import ActiveProject, get_active_project, get_claude, get_storage
-from ..models import Comment, DependencyGraph, DocType, MetadataEntry
+from ..models import ChatHistory, ChatMessage, Comment, DependencyGraph, DocType, MetadataEntry
 from ..schemas import (
     AddCommentRequest,
     AddressResponse,
+    ChatRequest,
     CreateTaskRequest,
     DocOut,
     SaveBodyRequest,
     StatusChange,
     UpdateCommentRequest,
 )
-from ..deps import get_claude
+from ..deps import get_claude, get_operations
 from ..services.claude import ClaudeService
+from ..services.operations import OperationManager
 from ..storage import ConflictError, StorageService
+from ._helpers import provisional_name
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 COLLECTION = "tasks"
@@ -54,23 +57,24 @@ def get_task(
     return DocOut(meta=meta, body=body, comments=comments)
 
 
-@router.post("", response_model=MetadataEntry, status_code=201)
+@router.post("", response_model=MetadataEntry, status_code=202)
 async def create_task(
     req: CreateTaskRequest,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
-    claude: ClaudeService = Depends(get_claude),
+    ops: OperationManager = Depends(get_operations),
 ):
-    generated = await claude.generate_document(
-        root=ap.root, project=ap.name, prompt=req.prompt, type=DocType.task,
-        depends_on=req.depends_on, name_hint=req.name,
-    )
-    return storage.create_entry(
+    """Async: placeholder now, task spec generated in the background (03/05)."""
+    entry = storage.create_placeholder(
         ap.root, ap.name, type=DocType.task,
-        display_name=req.name or generated.name,
-        body=generated.body, description=generated.description,
+        provisional_name=req.name or provisional_name(req.prompt),
         depends_on=req.depends_on, task_group=req.task_group,
     )
+    ops.start_generation(
+        ap.root, ap.name, entry.id, COLLECTION,
+        prompt=req.prompt, type=DocType.task, depends_on=req.depends_on, name_hint=req.name,
+    )
+    return entry
 
 
 @router.put("/{task_id}", response_model=MetadataEntry)
@@ -119,6 +123,30 @@ async def address_comments(
     return AddressResponse(
         revised_body=revised, addressed_comment_ids=[c.id for c in unresolved]
     )
+
+
+@router.get("/{task_id}/chat", response_model=ChatHistory)
+def get_chat(
+    task_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+):
+    return storage.read_chat(ap.root, ap.name, COLLECTION, task_id)
+
+
+@router.post("/{task_id}/chat", response_model=ChatMessage, status_code=202)
+async def post_chat(
+    task_id: str,
+    req: ChatRequest,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+    ops: OperationManager = Depends(get_operations),
+):
+    storage.get_entry(ap.root, ap.name, COLLECTION, task_id)
+    msg = storage.append_chat_message(ap.root, ap.name, COLLECTION, task_id, "user", req.message)
+    storage.begin_operation(ap.root, ap.name, COLLECTION, task_id, "chat")
+    ops.start_chat(ap.root, ap.name, COLLECTION, task_id, message=req.message)
+    return msg
 
 
 @router.post("/{task_id}/comments", response_model=Comment, status_code=201)

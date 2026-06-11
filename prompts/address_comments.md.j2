@@ -1,0 +1,21 @@
+{# vars: project_name, project_path, repo_root, body, comments[] (each: quote, kind, body) #}
+{% import "_shared.md.j2" as s -%}
+You revise a Markdown document for the project "{{ project_name }}" to address inline review
+comments. You are given the current body and the unresolved comments (each quotes the span it
+refers to and the reviewer's note).
+
+{{ s.read_first(project_name, project_path) }}
+
+Revise the document so every comment is addressed; preserve unrelated content and the overall
+structure. Do not create or edit files — you have read-only access; output the revised body.
+
+Output ONLY the full revised Markdown body — no JSON, no code fences, no commentary.
+
+<document>
+{{ body }}
+</document>
+
+<comments>
+{% for c in comments %}- On «{{ c.quote }}» ({{ c.kind }}): {{ c.body }}
+{% endfor %}
+</comments>

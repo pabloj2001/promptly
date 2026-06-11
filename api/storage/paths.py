@@ -26,12 +26,21 @@ def project_spec_path(root: str, name: str) -> Path:
     return project_dir(root, name) / "project.md"
 
 
+def permissions_path(root: str, name: str) -> Path:
+    return project_dir(root, name) / "permissions.json"
+
+
 def docs_dir(root: str, name: str) -> Path:
     return project_dir(root, name) / "docs"
 
 
 def docs_json_path(root: str, name: str) -> Path:
     return docs_dir(root, name) / "docs.json"
+
+
+def chat_path(root: str, name: str, collection: str, entry_id: str) -> Path:
+    sub = "tasks" if collection == "tasks" else "docs"
+    return project_dir(root, name) / sub / ".chats" / f"{entry_id}.json"
 
 
 def tasks_dir(root: str, name: str) -> Path:

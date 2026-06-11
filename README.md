@@ -89,14 +89,14 @@ Interactive API docs (Swagger) are at **http://localhost:8000/api-docs**.
 
 ```
 promptly/
+├─ prompts/                 # Jinja2 prompt templates (editable, separate from code)
 ├─ api/                     # FastAPI backend
 │  ├─ main.py               # app + routers + error envelope
 │  ├─ deps.py               # service singletons, active-project resolution
 │  ├─ models.py, schemas.py # on-disk models / HTTP schemas
-│  ├─ routers/              # projects, docs, tasks, metadata, executions
-│  ├─ services/             # claude.py (CLI), execution.py (engine + SSE bus)
+│  ├─ routers/              # projects, docs, tasks, metadata, executions, operations, permissions
+│  ├─ services/             # claude (CLI), operations (async runner), execution, prompts, permissions
 │  ├─ storage/              # filesystem-as-database (the StorageService)
-│  ├─ prompts/              # versioned prompt templates
 │  └─ tests/                # pytest suite
 ├─ web/                     # React frontend (Vite)
 │  └─ src/
@@ -104,7 +104,7 @@ promptly/
 │     ├─ store/             # zustand UI state
 │     ├─ components/        # shared primitives
 │     └─ features/          # projects, design, plan, build
-└─ docs/features/           # the implementation plan (00–08)
+└─ docs/features/           # the implementation plan (00–09)
 ```
 
 A Promptly **project** on disk:
@@ -113,8 +113,9 @@ A Promptly **project** on disk:
 <your-codebase>/
 └─ projects/<name>/
    ├─ project.md            # the spec (+ trailing comments as JSON in an HTML comment)
-   ├─ docs/{docs.json, *.md}
-   ├─ tasks/{tasks.json, *.md}
+   ├─ permissions.json      # per-project AI permissions, user-editable
+   ├─ docs/{docs.json, *.md, .chats/<id>.json}
+   ├─ tasks/{tasks.json, *.md, .chats/<id>.json}
    └─ executions/<id>/      # per-run state + git worktree (gitignored)  [feature 07]
 ```
 

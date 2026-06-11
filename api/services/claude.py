@@ -1,45 +1,33 @@
 """ClaudeService — drives the Claude CLI in headless mode (03).
 
-Mode A (one-shot generation) is implemented here: docs, task specs, the project
-spec, and comment-addressing. Mode B (stateful execution sessions) + the MCP tool
-server land with the Execution Engine (07).
+Mode A (generation: authoring/editing docs & tasks, chat, addressing comments) is
+implemented here. Mode B (stateful execution sessions) + the MCP tool server land with the
+Execution Engine (07).
 
-Design decisions (validated against Claude CLI v2.1.173):
-- One-shot calls use ``--output-format json`` and read the single ``result`` field
-  (cleaner than stream-json for non-interactive generation; still yields
-  ``session_id`` + cost).
-- Generation runs with **all tools disabled**. Empirically, enabling file tools
-  makes generation go agentic (multi-turn, tries to write files) and breaks the
-  structured ``{name, description, body}`` output. So instead of granting Read +
-  ``--add-dir``, the API **inlines** the project docs into the prompt: the model
-  still sees the full spec + sibling manifest + dependency bodies, delivered as
-  context rather than via a tool. (Sr-staff design review, Option B.)
-- ``--max-turns`` does not exist in this CLI version; we bound runtime with a
-  subprocess timeout instead.
+Design (validated against CLI v2.1.173 + the permissions docs):
+- Generation gives Claude **read access to the whole repo** (`cwd = repo root` + the
+  *generation* permissions profile compiled to `--settings`, 09) and the prompt instructs it
+  to read `CLAUDE.md`/spec/tasks/source first. Writes are denied — Claude returns text; *we*
+  write files.
+- One-shot/turn calls use `--output-format json`; pass `session_id` to resume a doc chat.
+- No `--max-turns` in this CLI — bound with a subprocess timeout.
+- Prompts are Jinja2 templates in the top-level `prompts/` dir (09), rendered by PromptLibrary.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from typing import Optional
 
-from ..models import CamelModel, Comment, DocType, MetadataEntry, TaskStatus
+from ..models import CamelModel, Comment, DocType
 from ..storage import StorageService
+from ..storage import paths
+from .permissions import build_cli_permissions
+from .prompts import PromptLibrary
 
-# Tools we explicitly disable for one-shot generation so it stays single-turn and
-# returns clean structured output.
-_DISABLED_TOOLS = [
-    "Write", "Edit", "NotebookEdit", "Bash", "Read", "Glob", "Grep",
-    "WebFetch", "WebSearch", "Task",
-]
-
-# Rough character budget for inlined context (Fable guardrail). Comfortably inside
-# the context window; we trim in priority order if exceeded.
-_CONTEXT_BUDGET = 350_000
-
-_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+# Rough character budget for any inline content we still pass (e.g. a doc body in chat).
+_BODY_BUDGET = 200_000
 
 
 class ClaudeError(Exception):
@@ -52,14 +40,16 @@ class GeneratedDoc(CamelModel):
     body: str
 
 
+class ChatTurn(CamelModel):
+    reply: str
+    revised_body: Optional[str] = None
+    session_id: Optional[str] = None
+
+
 class GenResult(CamelModel):
     text: str
     session_id: Optional[str] = None
     cost: Optional[float] = None
-
-
-def _load_prompt(name: str) -> str:
-    return (_PROMPTS_DIR / name).read_text(encoding="utf-8")
 
 
 class ClaudeService:
@@ -69,12 +59,14 @@ class ClaudeService:
         *,
         cli_path: str = "claude",
         default_model: str = "claude-opus-4-8",
-        timeout: float = 300.0,
+        timeout: float = 600.0,
+        prompts: Optional[PromptLibrary] = None,
     ) -> None:
         self.storage = storage
         self.cli = cli_path
         self.default_model = default_model
         self.timeout = timeout
+        self.prompts = prompts or PromptLibrary()
 
     # ── CLI invocation ──────────────────────────────────────────────────────────
 
@@ -82,20 +74,26 @@ class ClaudeService:
         self,
         prompt: str,
         *,
-        system: Optional[str] = None,
+        cwd: str,
+        settings_json: Optional[str] = None,
+        permission_mode: Optional[str] = None,
+        add_dirs: Optional[list[str]] = None,
         model: Optional[str] = None,
-        disallowed_tools: Optional[list[str]] = None,
-        cwd: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> GenResult:
         args = [
             self.cli, "-p", prompt,
             "--output-format", "json",
             "--model", model or self.default_model,
         ]
-        if system:
-            args += ["--append-system-prompt", system]
-        if disallowed_tools:
-            args += ["--disallowedTools", *disallowed_tools]
+        if settings_json:
+            args += ["--settings", settings_json]
+        if permission_mode:
+            args += ["--permission-mode", permission_mode]
+        for d in add_dirs or []:
+            args += ["--add-dir", d]
+        if session_id:
+            args += ["--resume", session_id]
 
         proc = await asyncio.create_subprocess_exec(
             *args, cwd=cwd,
@@ -124,78 +122,21 @@ class ClaudeService:
             cost=data.get("total_cost_usd"),
         )
 
-    # ── Context inlining ─────────────────────────────────────────────────────────
+    def _gen_cli_args(self, root: str, project: str) -> dict:
+        """Generation profile (09): cwd = repo root, repo-wide reads, writes denied."""
+        cfg = self.storage.read_permissions(root, project)
+        cli = build_cli_permissions(cfg, "generation", repo_root=root)
+        return {
+            "cwd": root,
+            "settings_json": cli.settings_json,
+            "permission_mode": cli.permission_mode,
+            "add_dirs": cli.add_dirs,
+        }
 
-    def _read_body(self, root: str, project: str, entry: MetadataEntry) -> str:
-        path = self.storage._body_abs(root, project, entry.file)  # noqa: SLF001
-        return path.read_text(encoding="utf-8") if path.exists() else ""
+    def _project_path(self, root: str, project: str) -> str:
+        return str(paths.project_dir(root, project)) + "/"
 
-    def build_context(
-        self,
-        root: str,
-        project: str,
-        *,
-        dependency_ids: Optional[list[str]] = None,
-    ) -> str:
-        """Inline the project spec + a manifest of all docs/tasks + full bodies of
-        the given dependencies. Trims to a character budget if needed."""
-        docs = self.storage.read_metadata(root, project, "docs")
-        tasks = self.storage.read_metadata(root, project, "tasks")
-        dependency_ids = dependency_ids or []
-
-        # 1. project spec (full) — highest priority.
-        spec_block = ""
-        spec = next(
-            (e for e in docs.values() if e.type == DocType.project_spec.value), None
-        )
-        if spec is not None:
-            body, _ = _split_body(self._read_body(root, project, spec))
-            spec_block = f"<file path=\"project.md\">\n{body.strip()}\n</file>\n\n"
-
-        # 2. manifest of siblings (name + description, plus status/deps for tasks).
-        manifest_lines: list[str] = []
-        for e in docs.values():
-            if e.type == DocType.project_spec.value or e.status == TaskStatus.removed.value:
-                continue
-            manifest_lines.append(f"- (doc) {e.name}: {e.description}")
-        for t in tasks.values():
-            if t.status == TaskStatus.removed.value:
-                continue
-            deps = f" depends_on={t.depends_on}" if t.depends_on else ""
-            manifest_lines.append(
-                f"- (task, {t.status}) {t.name}{deps}: {t.description}"
-            )
-        manifest_block = ""
-        if manifest_lines:
-            manifest_block = (
-                "<manifest>\nExisting docs and tasks in this project:\n"
-                + "\n".join(manifest_lines)
-                + "\n</manifest>\n\n"
-            )
-
-        # 3. full bodies of direct dependencies.
-        dep_blocks: list[str] = []
-        for dep_id in dependency_ids:
-            t = tasks.get(dep_id)
-            if t is None:
-                continue
-            body, _ = _split_body(self._read_body(root, project, t))
-            dep_blocks.append(
-                f"<dependency name=\"{t.name}\" file=\"{t.file}\">\n{body.strip()}\n</dependency>"
-            )
-        dep_block = ("\n\n".join(dep_blocks) + "\n\n") if dep_blocks else ""
-
-        context = spec_block + manifest_block + dep_block
-        if len(context) > _CONTEXT_BUDGET:
-            # Trim in priority order: drop dependency bodies, then trim manifest.
-            context = spec_block + manifest_block
-            if len(context) > _CONTEXT_BUDGET:
-                context = spec_block[:_CONTEXT_BUDGET]
-        if not context:
-            return ""
-        return "<project_context>\n" + context + "</project_context>\n\n"
-
-    # ── Mode A — one-shot generation ─────────────────────────────────────────────
+    # ── Mode A — generation ──────────────────────────────────────────────────────
 
     async def generate_document(
         self,
@@ -208,36 +149,85 @@ class ClaudeService:
         name_hint: Optional[str] = None,
     ) -> GeneratedDoc:
         type_val = type.value if isinstance(type, DocType) else type
-        system = {
-            DocType.project_spec.value: "generate_project_spec.md",
-            DocType.task.value: "generate_task.md",
-            DocType.doc.value: "generate_doc.md",
-        }.get(type_val, "generate_doc.md")
-        system_prompt = _load_prompt(system)
+        template = {
+            DocType.project_spec.value: "generate_project_spec",
+            DocType.task.value: "generate_task",
+            DocType.doc.value: "generate_doc",
+        }.get(type_val, "generate_doc")
 
-        context = self.build_context(root, project, dependency_ids=depends_on)
-        hint = f"\nSuggested name: {name_hint}\n" if name_hint else ""
-        user_prompt = f"{context}<request>\n{prompt}\n</request>\n{hint}"
+        dependency_names: list[str] = []
+        if depends_on:
+            tasks = self.storage.read_metadata(root, project, "tasks")
+            dependency_names = [tasks[d].name for d in depends_on if d in tasks]
 
-        result = await self._invoke(
-            user_prompt, system=system_prompt, disallowed_tools=_DISABLED_TOOLS
+        rendered = self.prompts.render(
+            template,
+            project_name=project,
+            project_path=self._project_path(root, project),
+            repo_root=root,
+            user_request=prompt,
+            name_hint=name_hint,
+            dependency_names=dependency_names,
         )
+        gen_args = self._gen_cli_args(root, project)
+        result = await self._invoke(rendered, **gen_args)
         parsed = _parse_structured(result.text)
+        last_text = result.text
         if parsed is None:
-            # One stricter retry (almost never fires in tools-off mode).
             retry = await self._invoke(
-                user_prompt
-                + "\n\nReturn ONLY the JSON object {\"name\",\"description\",\"body\"}.",
-                system=system_prompt,
-                disallowed_tools=_DISABLED_TOOLS,
+                rendered + '\n\nReturn ONLY the JSON object {"name","description","body"}.',
+                **gen_args,
             )
             parsed = _parse_structured(retry.text)
-        if parsed is None:
-            raise ClaudeError("could not parse structured generation output")
+            last_text = retry.text
+        if parsed is not None:
+            return GeneratedDoc(
+                name=name_hint or parsed.get("name") or "Untitled",
+                description=parsed.get("description", ""),
+                body=parsed.get("body", ""),
+            )
+        # Graceful fallback (09 open Q): the model returned prose, not JSON. Treat
+        # the whole reply as the body and derive name/description rather than fail.
+        raw = _strip_fences(last_text).strip()
+        if not raw:
+            raise ClaudeError("empty generation output")
         return GeneratedDoc(
-            name=name_hint or parsed.get("name") or "Untitled",
-            description=parsed.get("description", ""),
-            body=parsed.get("body", ""),
+            name=name_hint or _derive_name(raw),
+            description=_derive_description(raw),
+            body=raw,
+        )
+
+    async def chat(
+        self,
+        *,
+        root: str,
+        project: str,
+        doc_type: DocType | str,
+        body: str,
+        message: str,
+        session_id: Optional[str] = None,
+    ) -> ChatTurn:
+        type_val = doc_type.value if isinstance(doc_type, DocType) else doc_type
+        rendered = self.prompts.render(
+            "chat_edit",
+            project_name=project,
+            project_path=self._project_path(root, project),
+            repo_root=root,
+            doc_type=type_val,
+            body=body[:_BODY_BUDGET],
+            message=message,
+        )
+        gen_args = self._gen_cli_args(root, project)
+        result = await self._invoke(rendered, session_id=session_id, **gen_args)
+        parsed = _parse_structured(result.text, require="reply")
+        if parsed is None:
+            # Treat the raw text as a plain reply with no body change.
+            return ChatTurn(reply=_strip_fences(result.text).strip() or "(no reply)",
+                            revised_body=None, session_id=result.session_id)
+        return ChatTurn(
+            reply=str(parsed.get("reply", "")),
+            revised_body=parsed.get("revisedBody") or None,
+            session_id=result.session_id,
         )
 
     async def address_comments(
@@ -248,63 +238,74 @@ class ClaudeService:
         body: str,
         comments: list[Comment],
     ) -> str:
-        system_prompt = _load_prompt("address_comments.md")
-        comment_lines = []
-        for c in comments:
-            comment_lines.append(
-                f"- On «{c.anchor.quote}» ({c.kind}): {c.body}"
-            )
-        user_prompt = (
-            "<document>\n" + body + "\n</document>\n\n"
-            "<comments>\n" + "\n".join(comment_lines) + "\n</comments>\n\n"
-            "Return the full revised Markdown body."
+        rendered = self.prompts.render(
+            "address_comments",
+            project_name=project,
+            project_path=self._project_path(root, project),
+            repo_root=root,
+            body=body,
+            comments=[
+                {"quote": c.anchor.quote, "kind": c.kind, "body": c.body}
+                for c in comments
+            ],
         )
-        result = await self._invoke(
-            user_prompt, system=system_prompt, disallowed_tools=_DISABLED_TOOLS
-        )
+        result = await self._invoke(rendered, **self._gen_cli_args(root, project))
         return _strip_fences(result.text).strip()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────────
 
 
-def _split_body(raw: str) -> tuple[str, list]:
-    """Strip the trailing promptly:comments block from a raw .md (we only want the
-    body for context). Imported lazily to avoid a cycle at module import."""
-    from ..storage import comments as comment_io
-
-    return comment_io.parse_document(raw)
-
-
 def _strip_fences(text: str) -> str:
     t = text.strip()
     if t.startswith("```"):
-        # drop the first fence line (``` or ```json) and the trailing fence.
         first_nl = t.find("\n")
         if first_nl != -1:
-            t = t[first_nl + 1 :]
+            t = t[first_nl + 1:]
         if t.rstrip().endswith("```"):
-            t = t.rstrip()[: -3]
+            t = t.rstrip()[:-3]
     return t
 
 
-def _parse_structured(text: str) -> Optional[dict]:
-    """Leniently parse a {name, description, body} object out of the model's text."""
+def _parse_structured(text: str, require: str = "body") -> Optional[dict]:
+    """Leniently parse a JSON object (containing key ``require``) from model text."""
     candidate = _strip_fences(text).strip()
-    try:
-        obj = json.loads(candidate)
-        if isinstance(obj, dict) and "body" in obj:
-            return obj
-    except json.JSONDecodeError:
-        pass
-    # Fallback: find the first {...} span and try that.
-    start = candidate.find("{")
-    end = candidate.rfind("}")
-    if start != -1 and end > start:
+    for snippet in (candidate, _first_object(candidate)):
+        if not snippet:
+            continue
         try:
-            obj = json.loads(candidate[start : end + 1])
-            if isinstance(obj, dict) and "body" in obj:
-                return obj
+            obj = json.loads(snippet)
         except json.JSONDecodeError:
-            return None
+            continue
+        if isinstance(obj, dict) and require in obj:
+            return obj
     return None
+
+
+def _first_object(text: str) -> str:
+    start = text.find("{")
+    end = text.rfind("}")
+    return text[start : end + 1] if start != -1 and end > start else ""
+
+
+def _derive_name(body: str) -> str:
+    """Best-effort title for a doc when the model didn't give structured metadata:
+    the first Markdown H1, else the first non-empty line, truncated."""
+    for line in body.splitlines():
+        s = line.strip()
+        if s.startswith("# "):
+            return s[2:].strip()[:80] or "Untitled"
+    for line in body.splitlines():
+        s = line.strip().lstrip("#").strip()
+        if s:
+            return s[:80]
+    return "Untitled"
+
+
+def _derive_description(body: str) -> str:
+    """First non-heading, non-empty line, truncated."""
+    for line in body.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#"):
+            return s[:140]
+    return ""

@@ -8,7 +8,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .routers import docs, executions, metadata, projects, tasks
+from .routers import (
+    docs,
+    executions,
+    metadata,
+    operations,
+    permissions,
+    projects,
+    tasks,
+)
 from .storage import StorageError
 
 
@@ -55,6 +63,8 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router)
     app.include_router(metadata.router)
     app.include_router(executions.router)
+    app.include_router(operations.router)
+    app.include_router(permissions.router)
 
     @app.get("/health")
     def health():

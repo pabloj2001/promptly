@@ -15,12 +15,13 @@ numbered in roughly the order you'd build them, but read the dependency graph be
 | 00 | [Architecture Overview](./00-architecture-overview.md) | Tech stack, repo layout, on-disk project layout, how the pieces talk |
 | 01 | [Data Model & Storage](./01-data-model-and-storage.md) | `project.md`, `docs/`, `tasks/`, metadata JSON, in-file comment format, executions layout |
 | 02 | [Python API Server](./02-python-api-server.md) | REST + SSE endpoints, project/doc/task/metadata CRUD, the storage service |
-| 03 | [Claude CLI Integration](./03-claude-cli-integration.md) | Headless invocation, sessions, doc generation, the MCP tool server Claude calls back into |
-| 04 | [Frontend Foundation](./04-frontend-foundation.md) | App shell, routing/tabs, project picker/creation, shared state & API client |
-| 05 | [Design Tab](./05-design-tab.md) | Doc sidebar, editor/viewer, create-via-prompt, highlight comments, metadata panel |
+| 03 | [Claude CLI Integration](./03-claude-cli-integration.md) | Headless invocation, sessions, async doc/chat generation, the MCP tool server Claude calls back into |
+| 04 | [Frontend Foundation](./04-frontend-foundation.md) | App shell, routing/tabs, project picker/creation, shared state & API client, SSE helpers |
+| 05 | [Design Tab](./05-design-tab.md) | Doc sidebar, editor/viewer, create-via-prompt, async loading states, chat + comments, metadata |
 | 06 | [Plan Tab](./06-plan-tab.md) | Dependency graph canvas, group containers, hover highlighting, Kanban board, task side panel |
 | 07 | [Execution Engine](./07-execution-engine.md) | Worktrees, `progress.json`, the run loop, how Claude reports steps/questions |
 | 08 | [Build Tab](./08-build-tab.md) | Task sidebar, Info view (start/answer/feedback/PR), Diff view + diff comments |
+| 09 | [Prompts & Permissions](./09-prompts-and-permissions.md) | Editable Jinja2 prompt templates; per-project read/write permissions config; execution approval hook |
 
 ## Dependency graph
 
@@ -30,7 +31,8 @@ numbered in roughly the order you'd build them, but read the dependency graph be
 01 Data Model & Storage ──────────────┐
         │                             │
 02 API Server ── 03 Claude CLI ───────┤
-        │            │                │
+        │            │   ╲            │
+        │            │  09 Prompts & Permissions (cross-cutting: 03 + 07)
 04 Frontend Foundation                │
    ├── 05 Design Tab                  │
    ├── 06 Plan Tab                    │

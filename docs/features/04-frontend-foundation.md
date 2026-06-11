@@ -34,11 +34,15 @@ web/src/
 ```
 
 ## API client (`lib/api.ts`)
-- Thin typed wrappers per endpoint group (projects, docs, tasks, executions).
+- Thin typed wrappers per endpoint group (projects, docs, tasks, executions, chat,
+  permissions).
 - Auto-attaches the active `project` param from the store.
 - Centralized error shape handling (matches 02's `{ error: { code, message } }`).
 - React Query hooks layered on top: `useDocs()`, `useTask(id)`, `useTaskGraph()`,
-  `useExecution(id)`, with mutation hooks that invalidate the right query keys.
+  `useExecution(id)`, plus `useDocChat(id)` and `usePermissionsConfig()`, with mutation hooks
+  that invalidate the right query keys.
+- Async authoring: create/chat/address mutations return immediately; the **operations stream**
+  (below) drives the loading state and refetch when an operation finishes (01/05).
 
 ## Project picker & creation
 First screen if no active project (and reachable from a menu).
@@ -68,10 +72,13 @@ First screen if no active project (and reachable from a menu).
   Design's metadata section and Plan's task side panel.
 - `Modal`, `Toast`, `ConfirmDialog`, `Spinner`.
 
-## SSE helper (`lib/sse.ts`)
-Wraps `EventSource` for `GET /executions/{id}/stream`; exposes a hook
-`useExecutionStream(id)` that updates the React Query cache for that execution as `step`,
-`question`, and `status` events arrive. Used by Build (08).
+## SSE helpers (`lib/sse.ts`)
+Wrap `EventSource` for the two streams:
+- `useExecutionStream(id)` — `GET /executions/{id}/stream`; updates the execution's cache as
+  `step`/`question`/`permission`/`status` events arrive. Used by Build (08).
+- `useOperationsStream()` — `GET /operations/stream?project=`; on each `operation` event,
+  updates/invalidates the affected doc/task so the Design tab's loading states resolve live
+  (01/05). Subscribed once at the project level.
 
 ## Implementation steps
 1. Vite + TS + providers; status color map + `StatusBadge`.
@@ -79,7 +86,8 @@ Wraps `EventSource` for `GET /executions/{id}/stream`; exposes a hook
 3. Project picker + create flow against `POST /projects`.
 4. App shell, routing, tab switcher, selection store.
 5. Shared primitives: `PromptDialog`, `MetadataPanel`, `Modal`/`Toast`.
-6. SSE helper (can stub until 08).
+6. SSE helpers: `useExecutionStream` (stub until 08) + `useOperationsStream` (drives Design
+   loading states, 05).
 
 ## Open questions
 - Root-dir picking UX given browser limits — typed path for v1; a small local "browse"

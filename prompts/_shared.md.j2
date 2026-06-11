@@ -1,0 +1,17 @@
+{# Shared snippets included by the authoring templates. #}
+{% macro read_first(project_name, project_path) -%}
+Before writing, ground yourself in the repository — do not guess. Read, using your
+file-reading tools:
+- any `CLAUDE.md` files in the repo (project conventions/instructions),
+- the project spec at `{{ project_path }}project.md`,
+- related task specs in `{{ project_path }}tasks/` and supplemental docs in `{{ project_path }}docs/`,
+- the actual source code the document/task concerns.
+Stay consistent with what you find; do not contradict or duplicate existing material.
+{%- endmacro %}
+
+{% macro json_output(fields) -%}
+Respond with ONLY a single JSON object — no code fences, no commentary before or after —
+in exactly this shape:
+{{ fields }}
+`body` is the full Markdown document (newlines escaped per JSON).
+{%- endmacro %}

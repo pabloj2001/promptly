@@ -81,6 +81,15 @@ class RelatedPR(CamelModel):
     state: str
 
 
+class Operation(CamelModel):
+    """An in-flight AI operation on a doc/task (03/05). null when idle."""
+
+    type: str  # "generate" | "chat" | "address"
+    status: str = "running"  # "running" | "failed"
+    started_at: str
+    error: Optional[str] = None
+
+
 class MetadataEntry(CamelModel):
     id: str
     name: str
@@ -92,6 +101,7 @@ class MetadataEntry(CamelModel):
     depends_on: list[str] = Field(default_factory=list)
     custom: dict[str, Any] = Field(default_factory=dict)
     execution_id: Optional[str] = None
+    operation: Optional[Operation] = None
     file: str
     created_at: str
     updated_at: str
@@ -191,3 +201,50 @@ class GraphEdge(CamelModel):
 class DependencyGraph(CamelModel):
     nodes: list[GraphNode] = Field(default_factory=list)
     edges: list[GraphEdge] = Field(default_factory=list)
+
+
+# ── Doc chat (01/05) ───────────────────────────────────────────────────────────
+
+
+class ChatMessage(CamelModel):
+    id: str
+    role: str  # "user" | "assistant"
+    content: str
+    revised_body: bool = False
+    created_at: str
+
+
+class ChatHistory(CamelModel):
+    entry_id: str
+    session_id: Optional[str] = None
+    messages: list[ChatMessage] = Field(default_factory=list)
+
+
+# ── Per-project permissions config (09) ───────────────────────────────────────
+
+
+class PermissionProfile(CamelModel):
+    permission_mode: str = "default"
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+    ask_fallback: bool = False
+
+
+class PermissionsConfig(CamelModel):
+    version: int = 1
+    additional_read_dirs: list[str] = Field(default_factory=list)
+    generation: PermissionProfile = Field(
+        default_factory=lambda: PermissionProfile(
+            permission_mode="default",
+            allow=["Read", "Grep", "Glob"],
+            deny=["Edit", "Write", "Bash", "WebFetch", "WebSearch", "Task"],
+        )
+    )
+    execution: PermissionProfile = Field(
+        default_factory=lambda: PermissionProfile(
+            permission_mode="acceptEdits",
+            allow=["Read", "Grep", "Glob", "Edit", "Write", "Bash(git *)", "Bash(npm *)"],
+            deny=[],
+            ask_fallback=True,
+        )
+    )

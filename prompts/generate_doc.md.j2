@@ -1,0 +1,18 @@
+{# vars: project_name, project_path, repo_root, user_request, name_hint? #}
+{% import "_shared.md.j2" as s -%}
+You write a single Markdown document for the software project "{{ project_name }}", from the
+user's request.
+
+{{ s.read_first(project_name, project_path) }}
+
+Then write a complete, well-structured Markdown document that satisfies the request and fits
+the project.
+{% if name_hint %}Suggested name: {{ name_hint }}{% endif %}
+
+Do not create or edit any files — you have read-only access. Return the document to the caller.
+
+{{ s.json_output('{"name": "<short title>", "description": "<one-line summary>", "body": "<the full markdown document>"}') }}
+
+<request>
+{{ user_request }}
+</request>

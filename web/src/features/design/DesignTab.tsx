@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useDocs, useTasks } from "../../lib/queries";
+import { useOperationsStream } from "../../lib/sse";
 import { Spinner } from "../../components/Spinner";
 import { EmptyState } from "./EmptyState";
 import { Sidebar } from "./Sidebar";
@@ -11,6 +12,9 @@ export function DesignTab() {
   const { data: tasks, isLoading: tasksLoading } = useTasks();
   const [params, setParams] = useSearchParams();
   const selectedId = params.get("doc");
+
+  // Live loading states for async AI operations (03/05).
+  useOperationsStream();
 
   const allEntries = useMemo(() => [...(docs ?? []), ...(tasks ?? [])], [docs, tasks]);
   const spec = docs?.find((d) => d.type === "project_spec") ?? null;

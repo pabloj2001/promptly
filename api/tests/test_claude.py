@@ -4,6 +4,8 @@ import pytest
 
 from api.models import DocType
 from api.services.claude import (
+    ChatTurn,
+    ClaudeError,
     ClaudeService,
     GenResult,
     _parse_structured,
@@ -12,10 +14,6 @@ from api.services.claude import (
 
 
 # ── pure parsing helpers ─────────────────────────────────────────────────────────
-
-
-def test_strip_fences_plain():
-    assert _strip_fences("hello") == "hello"
 
 
 def test_strip_fences_json_block():
@@ -27,22 +25,21 @@ def test_parse_structured_clean():
     assert obj["name"] == "N" and obj["body"] == "# B"
 
 
-def test_parse_structured_fenced():
-    obj = _parse_structured('```json\n{"name":"N","description":"D","body":"B"}\n```')
-    assert obj["body"] == "B"
-
-
 def test_parse_structured_with_prose_around():
     text = 'Here you go:\n{"name":"N","description":"D","body":"B"}\nHope that helps!'
-    obj = _parse_structured(text)
-    assert obj["body"] == "B"
+    assert _parse_structured(text)["body"] == "B"
+
+
+def test_parse_structured_require_key():
+    assert _parse_structured('{"reply":"hi"}', require="reply")["reply"] == "hi"
+    assert _parse_structured('{"reply":"hi"}', require="body") is None
 
 
 def test_parse_structured_garbage_returns_none():
     assert _parse_structured("not json at all") is None
 
 
-# ── context inlining ─────────────────────────────────────────────────────────────
+# ── generation (CLI mocked) ──────────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -50,39 +47,17 @@ def svc(storage):
     return ClaudeService(storage)
 
 
-def test_build_context_includes_spec_manifest_deps(svc, storage, project):
-    name, root = project
-    storage.create_entry(root, name, type=DocType.project_spec,
-                         display_name="Spec", body="# The Spec\nbuild stuff")
-    dep = storage.create_entry(root, name, type=DocType.task, display_name="Base",
-                               description="base task", body="# Base\ndo base")
-    storage.create_entry(root, name, type=DocType.doc, display_name="Notes",
-                         description="some notes", body="# Notes")
-
-    ctx = svc.build_context(root, name, dependency_ids=[dep.id])
-    assert "The Spec" in ctx                 # full project.md body
-    assert "(doc) Notes: some notes" in ctx  # manifest
-    assert "(task, pending) Base" in ctx     # manifest task line
-    assert "do base" in ctx                  # dependency body inlined
-    assert "<project_context>" in ctx
-
-
-def test_build_context_empty_project(svc, project):
-    name, root = project
-    assert svc.build_context(root, name) == ""
-
-
-# ── generation (CLI mocked) ──────────────────────────────────────────────────────
-
-
 @pytest.mark.asyncio
-async def test_generate_document_parses_result(svc, storage, project, monkeypatch):
+async def test_generate_document_parses_result(svc, project, monkeypatch):
     name, root = project
 
     async def fake_invoke(prompt, **kw):
+        # sanity: generation runs at repo root with a settings payload
+        assert kw["cwd"] == root
+        assert kw["settings_json"]
         return GenResult(
             text='{"name":"Auth Spec","description":"login","body":"# Auth\\nbody"}',
-            session_id="s1", cost=0.01,
+            session_id="s1",
         )
 
     monkeypatch.setattr(svc, "_invoke", fake_invoke)
@@ -94,21 +69,32 @@ async def test_generate_document_parses_result(svc, storage, project, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_generate_document_retries_then_raises(svc, project, monkeypatch):
+async def test_generate_document_falls_back_to_raw(svc, project, monkeypatch):
+    """Non-JSON output → retry, then graceful fallback (raw text as body)."""
     name, root = project
     calls = {"n": 0}
 
     async def fake_invoke(prompt, **kw):
         calls["n"] += 1
-        return GenResult(text="totally not json")
+        return GenResult(text="# My Doc\n\nSome prose, not JSON.")
 
     monkeypatch.setattr(svc, "_invoke", fake_invoke)
-    from api.services.claude import ClaudeError
+    gen = await svc.generate_document(root=root, project=name, prompt="x", type=DocType.doc)
+    assert calls["n"] == 2  # initial + one retry before fallback
+    assert gen.name == "My Doc"
+    assert "Some prose" in gen.body
 
+
+@pytest.mark.asyncio
+async def test_generate_document_raises_on_empty(svc, project, monkeypatch):
+    name, root = project
+
+    async def fake_invoke(prompt, **kw):
+        return GenResult(text="   ")
+
+    monkeypatch.setattr(svc, "_invoke", fake_invoke)
     with pytest.raises(ClaudeError):
-        await svc.generate_document(root=root, project=name, prompt="x",
-                                    type=DocType.doc)
-    assert calls["n"] == 2  # initial + one retry
+        await svc.generate_document(root=root, project=name, prompt="x", type=DocType.doc)
 
 
 @pytest.mark.asyncio
@@ -122,6 +108,38 @@ async def test_name_hint_overrides(svc, project, monkeypatch):
     gen = await svc.generate_document(root=root, project=name, prompt="x",
                                       type=DocType.doc, name_hint="My Title")
     assert gen.name == "My Title"
+
+
+@pytest.mark.asyncio
+async def test_chat_returns_turn_with_revision(svc, project, monkeypatch):
+    name, root = project
+
+    async def fake_invoke(prompt, **kw):
+        return GenResult(
+            text='{"reply":"trimmed it","revisedBody":"# New\\nshort"}',
+            session_id="sess-2",
+        )
+
+    monkeypatch.setattr(svc, "_invoke", fake_invoke)
+    turn: ChatTurn = await svc.chat(
+        root=root, project=name, doc_type=DocType.doc, body="old", message="trim",
+    )
+    assert turn.reply == "trimmed it"
+    assert turn.revised_body == "# New\nshort"
+    assert turn.session_id == "sess-2"
+
+
+@pytest.mark.asyncio
+async def test_chat_plain_reply_no_revision(svc, project, monkeypatch):
+    name, root = project
+
+    async def fake_invoke(prompt, **kw):
+        return GenResult(text="just a plain answer, no json")
+
+    monkeypatch.setattr(svc, "_invoke", fake_invoke)
+    turn = await svc.chat(root=root, project=name, doc_type="doc", body="b", message="?")
+    assert "plain answer" in turn.reply
+    assert turn.revised_body is None
 
 
 @pytest.mark.asyncio

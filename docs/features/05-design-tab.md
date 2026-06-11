@@ -8,23 +8,42 @@ where AI authors them. The user **never writes files directly**: creating a doc 
 prompting AI. Manual edits to existing bodies are allowed (the editor saves via `PUT`), but
 creation is always prompt-driven.
 
+> **AI authoring is asynchronous** (user feedback). Generating or editing a doc runs as a
+> background **operation** (01/03): the request returns immediately and the user can keep
+> working. The Design tab reflects in-flight operations with **loading states** (below) and
+> updates live via the operations SSE stream (02/04).
+
 ## Layout
 ```
-┌───────────── Design ─────────────────────────────────────────┐
-│ Left sidebar          │  Main view (open doc)                 │
-│ ┌───────────────────┐ │  ┌──────────────────────────────────┐ │
-│ │ Metadata section  │ │  │ rendered markdown / editor        │ │
-│ │ (open doc's meta) │ │  │ highlight → comment popover       │ │
-│ ├───────────────────┤ │  │                                   │ │
-│ │ project.md        │ │  │                                   │ │
-│ │ docs/             │ │  │                                   │ │
-│ │  - architecture   │ │  └──────────────────────────────────┘ │
-│ │ tasks/            │ │  [ Address comments with AI ] button   │
-│ │  - set up auth    │ │                                        │
-│ │ [ + new ]         │ │                                        │
-│ └───────────────────┘ │                                        │
-└───────────────────────┴───────────────────────────────────────┘
+┌───────────── Design ─────────────────────────────────────────────────┐
+│ Left sidebar          │  Main view (open doc)        │ Right panel    │
+│ ┌───────────────────┐ │  ┌──────────────────────────┐│ [Chat|Comments]│
+│ │ Metadata section  │ │  │ rendered markdown / editor ││  ┌───────────┐ │
+│ │ (open doc's meta) │ │  │ highlight → comment / ask  ││  │ chat msgs │ │
+│ ├───────────────────┤ │  │                            ││  │   ...     │ │
+│ │ project.md      ⟳ │ │  │                            ││  ├───────────┤ │
+│ │ docs/             │ │  └──────────────────────────┘│  │ [type…]   │ │
+│ │  - architecture   │ │  [ Address comments with AI ] │  └───────────┘ │
+│ │ tasks/            │ │                                │                │
+│ │  - set up auth    │ │                                │                │
+│ │ [ + Doc ] [ +Task]│ │                                │                │
+│ └───────────────────┘ │                                │                │
+└───────────────────────┴────────────────────────────────┴───────────────┘
 ```
+(`⟳` = a doc with an operation in progress.)
+
+## Loading states (async authoring)
+A doc/task carries an `operation` ({type, status} — 01) while AI is generating or editing it:
+- **Sidebar:** show a small **loading spinner beside the name** of any doc with a running
+  operation. The user can navigate elsewhere while it runs.
+- **Brand-new doc** (created by a prompt): a placeholder entry appears in the sidebar
+  immediately (with spinner). If selected, the main view shows a **blank loading state**
+  (the body doesn't exist yet).
+- **Existing doc being edited** (chat edit / address): if selected, render the current doc
+  with a **banner** ("Changes in progress…") and **disable editing/commenting** until the
+  operation completes.
+- On completion the SSE event clears the operation; the body/metadata refresh in place. On
+  failure, surface the error and clear the operation so the user can retry.
 
 ## Left sidebar
 - **Metadata section (top):** shows the open doc's metadata (name, type, description,
@@ -34,10 +53,11 @@ creation is always prompt-driven.
 - **File tree:** `project.md` pinned at top, then `docs/`, then `tasks/`, each listing
   entries from `docs.json` / `tasks.json`. Clicking opens it in the main view. Status badge
   per task. `removed` items hidden unless a "show removed" toggle is on.
-- **`+ new` button:** opens `PromptDialog` (04). User picks **type** (supplemental doc vs.
-  task spec) and writes a prompt for what they want. For tasks, an optional dependency
-  picker selects `dependsOn`. Submit → `POST /docs` or `POST /tasks` with the prompt → AI
-  generates the body and metadata → new file appears and opens. Show a generating spinner.
+- **`+ Doc` / `+ Task` buttons:** open `PromptDialog` (04) with the prompt for what to
+  create; for tasks, an optional dependency picker selects `dependsOn`. Submit → `POST /docs`
+  or `POST /tasks` → the API returns immediately with a placeholder entry (operation running)
+  → it appears in the sidebar with a spinner and is selected → body/metadata fill in when the
+  background operation completes (no blocking).
 
 ## Empty state (first doc = project spec)
 If the project has no `project_spec` yet, the main view shows a focused prompt: "Describe
@@ -47,22 +67,38 @@ your project — what is it and what's it for?" Submitting calls `POST /docs` wi
 become available.
 
 ## Doc viewer / editor
-- Render markdown (e.g. `react-markdown`). The trailing `promptly:comments` block is parsed
-  out by the API and **never rendered as markdown** — comments come back as structured data.
-- **Manual edit** mode: a markdown editor (CodeMirror) for hand-tweaks; save via `PUT`.
-  Use optimistic-concurrency etag (02) to avoid clobbering AI revisions.
-- **Highlighting:** selecting text shows a popover with "Comment" / "Ask AI a question".
-  Submitting computes the anchor (`{quote, start, end}` per [01](./01-data-model-and-storage.md))
-  and `POST /docs/{id}/comments`. Existing comments render as margin markers / highlights;
-  clicking one shows the thread and a resolve toggle.
-- Comments are visually distinct by `kind` (`comment` vs `question`).
+- Render markdown (`react-markdown`). The trailing `promptly:comments` block is parsed out by
+  the API and **never rendered as markdown** — comments come back as structured data.
+- **Manual edit** mode: a raw-markdown editor (textarea in v1; CodeMirror later) for
+  hand-tweaks; save via `PUT`. Editing offsets in the raw text map directly to comment anchors
+  (`{quote, start, end}`, [01](./01-data-model-and-storage.md)). Disabled while an operation
+  is in progress (loading states, above).
+- **Highlighting:** selecting text offers **"Comment"** (an annotation) or **"Ask AI"**
+  (sends the quoted span into the doc **Chat** for an immediate answer — see right panel).
+  A comment computes the anchor and `POST /docs|tasks/{id}/comments`. Existing comments render
+  as markers/highlights; clicking shows the note and a resolve toggle.
+
+## Right panel — Chat / Comments toggle
+A toggle at the top of the right panel switches between **Chat** and **Comments** (user
+feedback):
+
+- **Chat** — a conversational box to **request general changes** to the doc or **ask
+  questions** about it. Messages are sent **one at a time, each getting its own response**
+  (not batched). Backed by a resumable Claude session with full repo read access (03). A
+  change request revises the doc body (the AI is its author); the doc shows the in-progress
+  banner while the turn runs, then refreshes. Chat history persists per doc (01). `POST
+  /docs|tasks/{id}/chat {message}` → background operation → SSE updates.
+- **Comments** — the list of highlight comments (annotations). Each shows its quoted anchor,
+  body, and a resolve toggle; orphaned comments (after a big revision) live in a separate
+  list (01).
 
 ## Address comments with AI
-- A button (enabled when unresolved comments exist) → `POST /docs/{id}/address`.
-- Backend sends body + unresolved comments to Claude (03) and returns a **proposed
-  revision**. Show a diff/preview (old vs. proposed). On **accept**, the body is replaced
-  and addressed comments are marked `resolved`; on reject, nothing changes.
-- This is the doc-level analogue of task execution: AI edits the doc, user reviews.
+- A button (enabled when unresolved comments exist) → `POST /docs|tasks/{id}/address`.
+- Runs as a background operation; the backend sends body + unresolved comments to Claude (03)
+  and returns a **proposed revision** for preview (old vs. proposed). On **accept**, the body
+  is replaced and addressed comments are marked `resolved`; on reject, nothing changes.
+- This is the batch analogue of Chat: many comments at once, with a review step. (Chat is for
+  single, conversational requests.)
 
 ## Wiring to other tabs
 - Opening a task doc here is the target of Plan's "Open in Design" action (04 routing):
@@ -72,15 +108,25 @@ become available.
 ## Implementation steps
 1. Sidebar file tree from `useDocs()`/`useTasks()`; open-doc routing.
 2. Markdown viewer + comment-data rendering (highlights/markers).
-3. `PromptDialog`-driven create for docs and tasks (incl. dependency picker for tasks).
+3. `PromptDialog`-driven create for docs and tasks (incl. dependency picker for tasks) — as
+   **async operations** returning placeholders.
 4. Empty-state project-spec flow.
-5. Highlight → comment/question creation with anchoring; resolve toggle.
-6. Manual editor + save with etag.
-7. "Address comments" → preview → accept/reject.
-8. Metadata section (reuse `MetadataPanel`) incl. custom fields.
+5. **Operations SSE wiring + loading states** (sidebar spinner, blank-new, in-progress banner
+   that disables edits).
+6. Highlight → comment creation with anchoring; resolve toggle; orphaned list.
+7. Right-panel **Chat/Comments toggle**; Chat (send one message → response; body revisions).
+8. "Address comments" → preview → accept/reject.
+9. Metadata section (reuse `MetadataPanel`) incl. custom fields.
+
+> **Build status:** steps 1–4, 6, 8, 9 shipped in the first 05 pass (synchronous). This
+> revision adds async operations + loading states (3, 5), Chat + the Chat/Comments toggle (7),
+> and moves "Ask AI" from a comment kind to the Chat. These are pending re-implementation.
 
 ## Open questions
 - Re-anchoring comments after a large AI revision: keep by quote match, mark orphaned
   otherwise (per 01). Show orphaned comments in a separate list rather than dropping them.
 - Do supplemental docs need statuses? Spec lists status as task-oriented; keep status
   optional for `doc`/`project_spec` and hide the control for them.
+- Should a chat change-request show a preview/accept step like "Address comments," or apply
+  directly (since the AI authors the doc)? Lean **apply directly** (it's editable/revertable),
+  but revisit if users want a gate.

@@ -27,6 +27,13 @@ export interface RelatedPR {
   state: string;
 }
 
+export interface Operation {
+  type: "generate" | "chat" | "address";
+  status: "running" | "failed";
+  startedAt: string;
+  error?: string | null;
+}
+
 export interface MetadataEntry {
   id: string;
   name: string;
@@ -38,9 +45,46 @@ export interface MetadataEntry {
   dependsOn: string[];
   custom: Record<string, unknown>;
   executionId?: string | null;
+  operation?: Operation | null;
   file: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  revisedBody: boolean;
+  createdAt: string;
+}
+
+export interface ChatHistory {
+  entryId: string;
+  sessionId?: string | null;
+  messages: ChatMessage[];
+}
+
+export interface PermissionProfile {
+  permissionMode: string;
+  allow: string[];
+  deny: string[];
+  askFallback: boolean;
+}
+
+export interface PermissionsConfig {
+  version: number;
+  additionalReadDirs: string[];
+  generation: PermissionProfile;
+  execution: PermissionProfile;
+}
+
+export interface OperationEvent {
+  entryId: string;
+  collection: "docs" | "tasks";
+  type: string;
+  status: string;
+  error?: string | null;
 }
 
 export interface CommentAnchor {

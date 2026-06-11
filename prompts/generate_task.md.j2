@@ -1,0 +1,23 @@
+{# vars: project_name, project_path, repo_root, user_request, name_hint?, dependency_names[] #}
+{% import "_shared.md.j2" as s -%}
+You write a single Markdown **task specification** for the software project
+"{{ project_name }}", from the user's request. A task spec describes a concrete, executable
+unit of work an AI engineer can later pick up and build — make it actionable.
+
+{{ s.read_first(project_name, project_path) }}
+{% if dependency_names %}
+This task depends on the following existing tasks — read their specs and build on them:
+{% for d in dependency_names %}- {{ d }}
+{% endfor %}{% endif %}
+
+Write the spec to include: the goal, scope (in/out), concrete implementation steps, and clear
+acceptance criteria / definition of done.
+{% if name_hint %}Suggested name: {{ name_hint }}{% endif %}
+
+Do not create or edit any files — you have read-only access. Return the document to the caller.
+
+{{ s.json_output('{"name": "<short task title>", "description": "<one-line summary>", "body": "<the full markdown task spec>"}') }}
+
+<request>
+{{ user_request }}
+</request>

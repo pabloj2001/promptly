@@ -41,11 +41,26 @@ and partial updates are O(1) and merge-friendlier.
     "custom": { "jira": "PROJ-3", "assignee": "pablo" }, // 8. arbitrary user kv
     "executionId": "<execution-id|null>",  // 9. active/last execution
     "file": "tasks/set-up-auth.md",        // relative path to the md body
+    "operation": {                          // 10. in-flight AI op, else null (03/05)
+      "type": "generate",                   //     "generate" | "chat" | "address"
+      "status": "running",                  //     "running" | "failed"
+      "startedAt": "ISO8601",
+      "error": null
+    },
     "createdAt": "ISO8601",
     "updatedAt": "ISO8601"
   }
 }
 ```
+
+### Async operations (`operation`)
+AI authoring/editing is asynchronous (03/05). While a doc is being generated or edited, its
+entry carries a non-null `operation`; it's `null` otherwise. This is **persisted** so a page
+refresh still shows the loading state, and changes are broadcast over an operations SSE
+stream (02). A **brand-new** doc gets a metadata entry with an empty body and
+`operation.status=running` the instant generation starts, so it appears in the sidebar (with
+a spinner) immediately; the body/metadata fill in on completion. On failure, `status` is set
+to `failed` with an `error` message until the user retries.
 
 ### Status enum (canonical, used app-wide)
 `pending | in_progress | in_review | blocked | done | removed`
@@ -94,6 +109,39 @@ never render in markdown and travel with the file.
   (search for the quote; if not found, mark the comment "orphaned").
 - When sending a doc "to be addressed by AI", we pass body + unresolved comments; on
   success the AI's revision replaces the body and we mark addressed comments `resolved`.
+- `kind` is `comment` (annotation) or `question`. Interactive Q&A now happens in the doc
+  **chat** (below); highlight → "Ask AI" feeds the quoted span into the chat rather than
+  creating a `question` comment.
+
+## 3b. Doc chat history
+Each doc/task has a conversational chat (05) for free-form change requests and questions,
+stored in a **per-entry sidecar** keyed by id so it survives renames:
+`<collection>/.chats/<id>.json` (e.g. `docs/.chats/<id>.json`, `tasks/.chats/<id>.json`).
+
+```json
+{
+  "entryId": "uuid",
+  "sessionId": "claude-session-id-or-null",
+  "messages": [
+    { "id": "uuid", "role": "user", "content": "make the auth section terser",
+      "createdAt": "ISO8601" },
+    { "id": "uuid", "role": "assistant", "content": "Done — trimmed it.",
+      "revisedBody": true, "createdAt": "ISO8601" }
+  ]
+}
+```
+- `sessionId` lets each new message **resume** the Claude session (03) so the conversation
+  has memory and full repo read access.
+- `revisedBody: true` flags assistant turns that changed the doc body (the body itself lives
+  in the `.md`; we just note the turn edited it).
+- The `.chats/` dir is committable history; keep messages append-only.
+
+## 3c. Per-project permissions config
+`<root>/projects/<name>/permissions.json` — Promptly-managed but **user-editable** — declares
+what file/tool access AI operations get (whole-repo reads by default; writes constrained).
+Full schema, profiles (`generation`/`execution`), and how it compiles into Claude CLI
+`--settings`/`--permission-mode` live in [09](./09-prompts-and-permissions.md). StorageService
+reads it (returning documented defaults when absent); the API exposes read/update (02).
 
 ## 4. Execution state
 Per execution dir `executions/<execution-id>/`:

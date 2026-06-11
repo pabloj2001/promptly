@@ -75,6 +75,10 @@ class UpdateCommentRequest(CamelModel):
     resolved: Optional[bool] = None
 
 
+class ChatRequest(CamelModel):
+    message: str
+
+
 class AddressResponse(CamelModel):
     """Proposed revision returned for preview (not yet written)."""
 

@@ -188,6 +188,40 @@ export function usePatchMetadata() {
   });
 }
 
+export function useChat(collection: Collection, id: string | null) {
+  const project = useProject();
+  return useQuery({
+    queryKey: ["chat", project, collection, id],
+    queryFn: () => api.getChat(collection, id!),
+    enabled: !!project && !!id,
+  });
+}
+
+export function useSendChat() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: ({
+      collection,
+      id,
+      message,
+    }: {
+      collection: Collection;
+      id: string;
+      message: string;
+    }) => api.sendChat(collection, id, message),
+    onSuccess: (_d, v) => {
+      // Reflect the new user message + the now-running operation immediately;
+      // the assistant reply + body change arrive via the operations stream.
+      qc.invalidateQueries({ queryKey: ["chat", project, v.collection, v.id] });
+      qc.invalidateQueries({ queryKey: ["entry", project, v.collection, v.id] });
+      qc.invalidateQueries({
+        queryKey: [v.collection === "tasks" ? "tasks" : "docs", project],
+      });
+    },
+  });
+}
+
 export function useSetTaskStatus() {
   const qc = useQueryClient();
   const project = useProject();

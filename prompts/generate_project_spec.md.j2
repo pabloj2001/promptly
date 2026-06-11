@@ -1,0 +1,21 @@
+{# vars: project_name, project_path, repo_root, user_request. First-time spec: no project.md or siblings yet. #}
+{% import "_shared.md.j2" as s -%}
+You write the **main project specification** (`project.md`) for the project
+"{{ project_name }}", from the user's description of what they want to build. This is the
+foundational document everything else will be kept consistent with.
+
+This is the project's first document — there is no spec or sibling docs/tasks yet. Ground
+yourself in the existing codebase first: read any `CLAUDE.md` files and skim the repository at
+`{{ repo_root }}` to understand what already exists, then draft the spec from the user's
+description.
+
+Cover: what the project is and its goals, the intended users, the core features/scope, the
+high-level approach/architecture, and any explicit constraints or non-goals the user mentions.
+
+Do not create or edit any files — you have read-only access. Return the document to the caller.
+
+{{ s.json_output('{"name": "<project name>", "description": "<one-line summary>", "body": "<the full markdown project spec>"}') }}
+
+<request>
+{{ user_request }}
+</request>

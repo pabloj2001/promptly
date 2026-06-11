@@ -7,18 +7,27 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from ..deps import ActiveProject, get_active_project, get_claude, get_storage
-from ..models import Comment, MetadataEntry
+from ..deps import (
+    ActiveProject,
+    get_active_project,
+    get_claude,
+    get_operations,
+    get_storage,
+)
+from ..models import ChatHistory, ChatMessage, Comment, MetadataEntry
 from ..schemas import (
     AddCommentRequest,
     AddressResponse,
+    ChatRequest,
     CreateDocRequest,
     DocOut,
     SaveBodyRequest,
     UpdateCommentRequest,
 )
 from ..services.claude import ClaudeService
+from ..services.operations import OperationManager
 from ..storage import StorageService
+from ._helpers import provisional_name
 
 router = APIRouter(prefix="/docs", tags=["docs"])
 COLLECTION = "docs"
@@ -42,23 +51,25 @@ def get_doc(
     return DocOut(meta=meta, body=body, comments=comments)
 
 
-@router.post("", response_model=MetadataEntry, status_code=201)
+@router.post("", response_model=MetadataEntry, status_code=202)
 async def create_doc(
     req: CreateDocRequest,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
-    claude: ClaudeService = Depends(get_claude),
+    ops: OperationManager = Depends(get_operations),
 ):
-    generated = await claude.generate_document(
-        root=ap.root, project=ap.name, prompt=req.prompt, type=req.type,
-        depends_on=req.depends_on, name_hint=req.name,
-    )
-    return storage.create_entry(
+    """Async: create a placeholder (operation running) and return immediately; the
+    body/metadata are generated in the background (03/05)."""
+    entry = storage.create_placeholder(
         ap.root, ap.name, type=req.type,
-        display_name=req.name or generated.name,
-        body=generated.body, description=generated.description,
+        provisional_name=req.name or provisional_name(req.prompt),
         depends_on=req.depends_on,
     )
+    ops.start_generation(
+        ap.root, ap.name, entry.id, COLLECTION,
+        prompt=req.prompt, type=req.type, depends_on=req.depends_on, name_hint=req.name,
+    )
+    return entry
 
 
 @router.put("/{doc_id}", response_model=MetadataEntry)
@@ -69,6 +80,31 @@ def save_doc(
     storage: StorageService = Depends(get_storage),
 ):
     return storage.save_body(ap.root, ap.name, COLLECTION, doc_id, req.body)
+
+
+@router.get("/{doc_id}/chat", response_model=ChatHistory)
+def get_chat(
+    doc_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+):
+    return storage.read_chat(ap.root, ap.name, COLLECTION, doc_id)
+
+
+@router.post("/{doc_id}/chat", response_model=ChatMessage, status_code=202)
+async def post_chat(
+    doc_id: str,
+    req: ChatRequest,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+    ops: OperationManager = Depends(get_operations),
+):
+    """Append the user message + start a background chat turn (may revise the body)."""
+    storage.get_entry(ap.root, ap.name, COLLECTION, doc_id)  # 404 if missing
+    msg = storage.append_chat_message(ap.root, ap.name, COLLECTION, doc_id, "user", req.message)
+    storage.begin_operation(ap.root, ap.name, COLLECTION, doc_id, "chat")
+    ops.start_chat(ap.root, ap.name, COLLECTION, doc_id, message=req.message)
+    return msg
 
 
 @router.post("/{doc_id}/comments", response_model=Comment, status_code=201)

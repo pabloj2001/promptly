@@ -7,6 +7,35 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "../store";
 import type { ProgressState } from "./types";
 
+/**
+ * Subscribe to the per-project operations stream (03/05). On each `operation`
+ * event, refresh the affected doc/task + lists so the Design loading states resolve
+ * live. Subscribe once at the project level.
+ */
+export function useOperationsStream() {
+  const qc = useQueryClient();
+  const project = useUiStore((s) => s.activeProject);
+
+  useEffect(() => {
+    if (!project) return;
+    const url = `/api/operations/stream?project=${encodeURIComponent(project)}`;
+    const es = new EventSource(url);
+    es.addEventListener("operation", (e) => {
+      const data = JSON.parse((e as MessageEvent).data) as {
+        entryId: string;
+        collection: "docs" | "tasks";
+      };
+      qc.invalidateQueries({ queryKey: [data.collection, project] });
+      qc.invalidateQueries({ queryKey: ["entry", project, data.collection, data.entryId] });
+      qc.invalidateQueries({ queryKey: ["chat", project, data.collection, data.entryId] });
+    });
+    es.onerror = () => {
+      /* EventSource auto-reconnects; nothing to do */
+    };
+    return () => es.close();
+  }, [project, qc]);
+}
+
 export function useExecutionStream(executionId: string | null) {
   const qc = useQueryClient();
   const project = useUiStore((s) => s.activeProject);

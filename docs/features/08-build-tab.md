@@ -39,13 +39,16 @@ the worktree + starts the run, task flips to `in_progress`, view switches to the
 - **Steps:** the `steps` array from `progress.json`, each with status
   (pending/in_progress/done/skipped), updating live as MCP `update_step`/`add_step` events
   arrive.
-- **Clarifying questions:** when `pendingQuestions` is non-empty (status `awaiting_input`),
-  render each with an answer box → `POST /executions/{id}/answer` → resumes Claude (07).
+- **Clarifying questions (conversational):** questions surface and are answered **one at a
+  time** like a chat (user feedback) — each `pendingQuestions` entry renders with an answer
+  box → `POST /executions/{id}/answer` → resumes Claude (07), who may then ask the next. Not
+  a batch form.
 - **Permission requests:** when `pendingPermissions` is non-empty (also `awaiting_input`),
   render each flagged out-of-scope action (the tool + what it wants to do) with **Allow** /
-  **Deny** buttons → `POST /executions/{id}/permission` → decision returns to the CLI and
-  Claude resumes (07). Execution runs unattended within the project folder; only out-of-scope
-  actions surface here. Driven by the SSE `permission` event.
+  **Deny** buttons → `POST /executions/{id}/permission` → the waiting `PreToolUse` hook reads
+  the decision and returns it to the CLI, and Claude resumes (07/09). Execution runs
+  unattended within the worktree; only out-of-scope actions surface here. Driven by the SSE
+  `permission` event.
 - When Claude calls `report_done`, status → `in_review` and the view updates.
 
 **In review** → review actions:

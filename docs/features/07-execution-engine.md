@@ -1,7 +1,8 @@
 # 07 — Execution Engine
 
 **Depends on:** [01](./01-data-model-and-storage.md), [02](./02-python-api-server.md),
-[03 Claude CLI](./03-claude-cli-integration.md). **Blocks:** [08 Build Tab](./08-build-tab.md).
+[03 Claude CLI](./03-claude-cli-integration.md), [09 Prompts & Permissions](./09-prompts-and-permissions.md).
+**Blocks:** [08 Build Tab](./08-build-tab.md).
 
 The backend that runs a task: creates an isolated git worktree, spawns a stateful Claude
 session that builds the task and reports progress via MCP tools, persists everything to
@@ -36,13 +37,14 @@ tracks the run loop.
    UI can subscribe to the stream.
 
 ## The run loop
-Uses `ClaudeService.run_session()` (03) with `cwd = worktree/`, the MCP server registered
-and bound to this `executionId`, and an `on_event` callback.
-- **Prompt:** the task spec (`tasks/<slug>.md`) + project context (project spec, the task's
-  dependencies' specs/status so Claude knows what it can build on). System prompt
-  (`execute_task.md`) instructs Claude to: plan via `plan_steps`, keep steps updated via
-  `update_step`/`add_step`, ask via `ask_question` when blocked, and call `report_done` when
-  finished — and that it may only write inside the worktree.
+Uses `ClaudeService.run_session()` (03) with `cwd = worktree/`, the **execution** permissions
+profile compiled into `--settings`/`--permission-mode`/`--add-dir` (09), the MCP server
+registered and bound to this `executionId`, and an `on_event` callback.
+- **Prompt:** rendered from `execute_task.md.j2` (09). Claude is told to **read first** —
+  the task spec, the project spec, its dependencies' specs, `CLAUDE.md`, and the relevant
+  source (it has whole-repo read access via the execution profile) — then plan via
+  `plan_steps`, keep steps updated via `update_step`/`add_step`, ask via `ask_question` when
+  blocked, and call `report_done` when finished. It may only **write** inside the worktree.
 - **Progress writes come from the MCP tools**, not from parsing model text: each tool call
   mutates this execution's `progress.json` (via StorageService, locked atomic write) and
   publishes an event to the SSE bus. This is why MCP is preferred over Claude editing JSON.
@@ -89,44 +91,43 @@ events. Survives reconnects because state is always in `progress.json`.
 - **Cleanup:** on task `done`/abandon, optionally remove the worktree (`git worktree remove
   --force`) and prune the branch; keep `progress.json`/`comments.json` for history.
 ## Permissions model
-Claude runs **unattended by default**, but **sandboxed to the project folder** — it may
-read, write, and execute only within the execution `worktree/` (the project's working copy
-for this run). It must never read or write outside it.
-- **Scope enforcement:** run Claude with `cwd = worktree/` and the CLI's sandbox/permission
-  mode configured to confine *writes/execution* to that directory (e.g. allow edit/run tools
-  but bound their paths to the worktree).
-- **Always-readable project docs:** Claude **always has read access to the project docs** —
-  `project.md`, `projects/<name>/docs/`, and `projects/<name>/tasks/` — so it can consult the
-  spec, sibling docs, and other task specs while working. Grant this as a **read-only**
-  `--add-dir <root>/projects/<name>/` (pointing at the *live* project dir, not the worktree's
-  committed copy, so it sees current edits). This is read-only: Promptly owns those files;
-  Claude reports progress via the MCP tools (03), it does not edit docs/metadata directly.
-- **Additional read-only dirs (future):** the project-docs grant above uses the same
-  read-only `--add-dir` mechanism. Beyond it, allow the user to register *extra* directories
-  Claude may read but not write. Out of scope for v1; design the config so it's additive (a
-  per-project list of `{path, mode: "ro"}`, with the project docs dir always included).
-- **Flagged requests go back to the user.** When Claude attempts something outside the
-  allowed scope (e.g. writing/running outside the worktree, a tool not on the allowlist),
-  the CLI's **permission-prompt tool** (an MCP tool we expose, see [03](./03-claude-cli-integration.md))
-  routes the request to Promptly instead of auto-denying. We record it as a **pending
-  permission request** and **surface it in the Build execution interface** for the user to
-  **Allow** or **Deny** (same UX lane as clarifying questions). The user's decision is
-  returned to the CLI and the session continues.
+Driven by the per-project **execution** profile in `permissions.json`, compiled into Claude
+CLI `--settings`/`--permission-mode`/`--add-dir` ([09](./09-prompts-and-permissions.md)).
+Claude runs **unattended by default** but **writes/executes only within the worktree**, while
+it may **read the whole repo** for context.
+- **Read the repo:** reads need no approval; with `cwd = worktree/` plus `--add-dir <root>`
+  Claude can consult the live project docs (spec, sibling tasks/docs) and the rest of the
+  codebase. It reports progress via the MCP tools (03); it does not edit docs/metadata.
+- **Write/exec scoped to the worktree:** the execution profile uses `permissionMode:
+  acceptEdits` (auto-accept edits in the working dir) plus deny rules for writes/exec outside
+  the worktree. The worktree isolates all changes from the user's tree until a PR.
+- **Flagged requests go back to the user — via a `PreToolUse` hook, not an MCP tool.** This
+  CLI has **no `--permission-prompt-tool`** (verified, v2.1.173). Instead the settings we pass
+  register a **`PreToolUse` hook** (09): when Claude attempts something out of scope (write/exec
+  outside the worktree, a tool not on the allowlist), the hook records a **pending permission
+  request**, signals Promptly, and **blocks** (waiting) until the user decides — then returns
+  allow/deny to the CLI.
   - Add `pendingPermissions: [{ id, tool, request, decision: null, askedAt }]` to
-    `progress.json`; a request sets `progress.status = awaiting_input` and emits an SSE
+    `progress.json`; the hook sets `progress.status = awaiting_input` and emits an SSE
     `permission` event. `POST /executions/{id}/permission {requestId, decision}` records the
-    answer, returns it to the waiting CLI, and resumes `running`.
-- The worktree isolates all changes from the user's working tree until a PR is made.
+    answer; the waiting hook reads it and returns the decision to the CLI; status resumes
+    `running`. (The hook ↔ Promptly channel can be the Promptly HTTP API or a small file the
+    hook polls under the execution dir — pick the simpler at implementation time.)
+- **Widening access:** the user edits `permissions.json` to grant more (extra read dirs,
+  additional allowed tools/commands). Defaults are sensible without it (09).
 
 ## Implementation steps
 1. Worktree create/remove helpers + idempotent `.gitignore` handling.
 2. ExecutionManager: start flow, `progress.json` init, two-way task↔execution linking.
 3. SSE bus (pub/sub) + snapshot-on-connect.
-4. Run loop via `run_session()` + MCP-driven progress writes.
-5. Answer / feedback / PR-comment resume paths.
-6. Diff endpoint + PR creation.
-7. Cancel/cleanup + concurrent-execution registry.
-8. Tests: worktree lifecycle, MCP→progress→SSE path, resume flows (mock ClaudeService).
+4. Run loop via `run_session()` (execution permissions profile + `execute_task.md.j2`) +
+   MCP-driven progress writes.
+5. `PreToolUse` approval hook + `pendingPermissions` ↔ `/permission` wiring (09).
+6. Answer / feedback / PR-comment resume paths.
+7. Diff endpoint + PR creation.
+8. Cancel/cleanup + concurrent-execution registry.
+9. Tests: worktree lifecycle, MCP→progress→SSE path, permission-hook flow, resume flows
+   (mock ClaudeService).
 
 ## Open questions
 - PR tooling: require `gh` CLI vs. a GitHub token. `gh` reuses the user's auth — prefer it.

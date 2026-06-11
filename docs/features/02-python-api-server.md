@@ -45,19 +45,28 @@ multi-project comes free. The frontend stores the active project name and attach
 - `DELETE /projects/{name}` → unregister (optionally leave files on disk).
 
 ### Docs  (`type` in {project_spec, doc})
+AI authoring/editing runs **asynchronously** (03/05): the create/chat/address routes return
+immediately with the entry (its `operation` running) and do the Claude work in a background
+task, publishing to the operations stream on completion.
 - `GET  /docs?project=` → list metadata from `docs.json`.
 - `GET  /docs/{id}?project=` → metadata + parsed body + parsed comments.
 - `POST /docs?project=` → **prompt-driven create** `{ prompt, type, name?, dependsOn? }`.
-  Calls ClaudeService to generate the body, writes `.md`, appends metadata. Returns new doc.
-- `PUT  /docs/{id}?project=` → save edited body and/or metadata (manual edits allowed).
+  Creates a placeholder entry (`operation: generate/running`, empty body) and returns **202**
+  immediately; a background task generates body+metadata, then clears the operation. Returns
+  the placeholder entry.
+- `PUT  /docs/{id}?project=` → save edited body and/or metadata (manual edits; synchronous).
+- `POST /docs/{id}/chat` `{ message }` → append a user chat message and start a background
+  chat turn (resumes the doc's Claude session); may revise the body. Returns the user message.
+- `GET  /docs/{id}/chat` → the chat history (`.chats/<id>.json`, 01).
 - `POST /docs/{id}/comments` → add a highlight comment `{ anchor, body, kind }`.
 - `PUT  /docs/{id}/comments/{cid}` → edit/resolve a comment.
-- `POST /docs/{id}/address` → send body + unresolved comments to Claude to revise; returns
-  the proposed revision (frontend can preview/accept) and resolves addressed comments.
+- `POST /docs/{id}/address` → background revise to address unresolved comments; the
+  completion event carries the proposed revision (frontend previews/accepts).
 - `DELETE /docs/{id}` → soft-remove.
 
 ### Tasks  (`type` = task)
-Same shape as docs, against `tasks.json`, plus:
+Same shape as docs (incl. async create/chat/address + `/chat` history), against `tasks.json`,
+plus:
 - `GET  /tasks/graph?project=` → `{ nodes, edges }` for the Plan tab (excludes `removed`
   unless `?includeRemoved=true`).
 - `PUT  /tasks/{id}/status` → status change (used by Kanban drag + side panel). Validates
@@ -65,10 +74,19 @@ Same shape as docs, against `tasks.json`, plus:
 - Task create (`POST /tasks`) takes `{ prompt, dependsOn?, taskGroup? }` and generates the
   task spec `.md` via Claude, same as docs.
 
+### Operations stream
+- `GET /operations/stream?project=` → **SSE** of doc/task operation events so the Design tab
+  shows live loading states (01/05): `event: operation  data: {entryId, type, status, error?}`.
+  Backed by an in-memory per-project pub/sub (same pattern as the execution bus).
+
 ### Metadata / custom fields
 - `PUT  /tasks/{id}/metadata` and `/docs/{id}/metadata` → patch any metadata field,
   including the `custom` map (add/edit/delete custom kv pairs from the Design metadata
   panel and the Plan side panel).
+
+### Permissions config  (per-project; see [09](./09-prompts-and-permissions.md))
+- `GET  /permissions?project=` → the project's `permissions.json` (or defaults if absent).
+- `PUT  /permissions?project=` → replace it (the user-editable allow/deny/dirs profiles).
 
 ### Executions  (detailed in [07](./07-execution-engine.md))
 - `POST /executions?project=` `{ taskId }` → start an execution. Creates worktree, sets

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { PromptDialog, type PromptResult } from "../../components/PromptDialog";
+import { Spinner } from "../../components/Spinner";
 import { StatusBadge } from "../../components/StatusBadge";
 import { useCreateDoc, useCreateTask, useDocs, useTasks } from "../../lib/queries";
 import type { MetadataEntry } from "../../lib/types";
@@ -52,19 +53,28 @@ export function Sidebar({
     }
   };
 
-  const Row = ({ entry }: { entry: MetadataEntry }) => (
-    <button
-      className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-sm ${
-        selectedId === entry.id
-          ? "bg-blue-100 text-blue-800"
-          : "text-slate-700 hover:bg-slate-100"
-      }`}
-      onClick={() => onSelect(entry.id)}
-    >
-      <span className="truncate">{entry.name}</span>
-      {entry.status && <StatusBadge status={entry.status} />}
-    </button>
-  );
+  const Row = ({ entry }: { entry: MetadataEntry }) => {
+    const op = entry.operation;
+    return (
+      <button
+        className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-sm ${
+          selectedId === entry.id
+            ? "bg-blue-100 text-blue-800"
+            : "text-slate-700 hover:bg-slate-100"
+        }`}
+        onClick={() => onSelect(entry.id)}
+      >
+        <span className="truncate">{entry.name}</span>
+        {op?.status === "running" && <Spinner className="text-slate-400" />}
+        {op?.status === "failed" && (
+          <span title={op.error ?? "failed"} className="text-xs text-red-500">
+            ⚠
+          </span>
+        )}
+        {!op && entry.status && <StatusBadge status={entry.status} />}
+      </button>
+    );
+  };
 
   return (
     <aside className="flex h-full w-72 flex-col border-r border-slate-200 bg-slate-50">
