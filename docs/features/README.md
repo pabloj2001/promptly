@@ -22,6 +22,7 @@ numbered in roughly the order you'd build them, but read the dependency graph be
 | 07 | [Execution Engine](./07-execution-engine.md) | Worktrees, `progress.json`, the run loop, how Claude reports steps/questions |
 | 08 | [Build Tab](./08-build-tab.md) | Task sidebar, Info view (start/answer/feedback/PR), Diff view + diff comments |
 | 09 | [Prompts & Permissions](./09-prompts-and-permissions.md) | Editable Jinja2 prompt templates; per-project read/write permissions config; execution approval hook |
+| 10 | [Settings Screen](./10-settings-screen.md) | _Future._ Global settings modal (permissions editor, project, models, about) |
 
 ## Dependency graph
 
