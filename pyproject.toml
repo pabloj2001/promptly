@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "promptly"
 version = "0.1.0"
@@ -12,6 +16,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx"]
+
+[tool.setuptools.packages.find]
+include = ["api*"]
 
 [tool.pytest.ini_options]
 testpaths = ["api/tests"]
