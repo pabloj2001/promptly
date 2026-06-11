@@ -8,6 +8,7 @@ __pycache__/
 # Node / frontend
 node_modules/
 web/dist/
+*.tsbuildinfo
 
 # Promptly app data (local registry, if pointed here)
 .promptly/

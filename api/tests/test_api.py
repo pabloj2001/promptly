@@ -161,6 +161,13 @@ def test_cycle_rejected_via_metadata(client, proj):
     assert r.status_code == 422
 
 
+def test_task_address_preview(client, proj):
+    t = client.post("/tasks", params=q(proj), json={"prompt": "t", "name": "T"}).json()
+    r = client.post(f"/tasks/{t['id']}/address", params=q(proj))
+    assert r.status_code == 200
+    assert "addressed" in r.json()["revisedBody"]
+
+
 def test_metadata_custom_patch(client, proj):
     t = client.post("/tasks", params=q(proj), json={"prompt": "t", "name": "T"}).json()
     r = client.put(f"/tasks/{t['id']}/metadata", params=q(proj),

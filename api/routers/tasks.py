@@ -12,12 +12,14 @@ from ..deps import ActiveProject, get_active_project, get_claude, get_storage
 from ..models import Comment, DependencyGraph, DocType, MetadataEntry
 from ..schemas import (
     AddCommentRequest,
+    AddressResponse,
     CreateTaskRequest,
     DocOut,
     SaveBodyRequest,
     StatusChange,
     UpdateCommentRequest,
 )
+from ..deps import get_claude
 from ..services.claude import ClaudeService
 from ..storage import ConflictError, StorageService
 
@@ -100,6 +102,23 @@ def set_status(
         if prog is not None and prog.status in ("running", "awaiting_input"):
             raise ConflictError("cannot mark done while an execution is active")
     return storage.set_status(ap.root, ap.name, task_id, req.status)
+
+
+@router.post("/{task_id}/address", response_model=AddressResponse)
+async def address_comments(
+    task_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+    claude: ClaudeService = Depends(get_claude),
+):
+    _, body, comments = storage.read_document(ap.root, ap.name, COLLECTION, task_id)
+    unresolved = [c for c in comments if not c.resolved]
+    revised = await claude.address_comments(
+        root=ap.root, project=ap.name, body=body, comments=unresolved,
+    )
+    return AddressResponse(
+        revised_body=revised, addressed_comment_ids=[c.id for c in unresolved]
+    )
 
 
 @router.post("/{task_id}/comments", response_model=Comment, status_code=201)
