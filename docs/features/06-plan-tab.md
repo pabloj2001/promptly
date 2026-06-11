@@ -69,6 +69,13 @@ A hover/floating **+** button opens `PromptDialog` (04): prompt for what the tas
 5. Board view with drag-to-change-status (optimistic + transition validation).
 6. View toggle + persistence; floating "add task" via `PromptDialog`.
 
+> **Build status:** implemented. Graph (React Flow + per-group dagre layout with
+> background group containers, hover ancestor/descendant highlighting with two-tone edges),
+> Kanban board (HTML5 drag, optimistic status change + revert), shared side panel
+> (editable metadata + before/after + Open-in-Design + Execute), center-bottom Graph/Board
+> toggle (persisted in the ui store), and floating add-task (`PromptDialog`, async create).
+> Manual node positions are not persisted (auto-layout each load), per the decision below.
+
 ## Open questions
 - Persist manual node positions? Default no (auto-layout each load); add later if requested.
 - Group containers + a clean DAG layout can fight each other — may need per-group sub-layout
