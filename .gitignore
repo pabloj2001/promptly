@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+web/dist/
+
+# Promptly app data (local registry, if pointed here)
+.promptly/
