@@ -1,16 +1,8 @@
 import { useMemo, useState } from "react";
+import { StatusSelect } from "../../components/StatusSelect";
 import { usePatchMetadata, useSetTaskStatus, useTasks } from "../../lib/queries";
-import { STATUS_META } from "../../lib/status";
 import type { MetadataEntry, TaskStatus } from "../../lib/types";
 import { collectionForType } from "./util";
-
-const EDITABLE_STATUSES: TaskStatus[] = [
-  "pending",
-  "in_progress",
-  "in_review",
-  "blocked",
-  "done",
-];
 
 // The Design sidebar's metadata section: read + inline edit (description, group,
 // status for tasks, custom kv). Saves via the metadata/status endpoints.
@@ -46,19 +38,10 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
       {entry.type === "task" && (
         <div>
           <label className="text-xs uppercase tracking-wide text-slate-400">Status</label>
-          <select
-            className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none"
-            value={entry.status ?? "pending"}
-            onChange={(e) =>
-              setStatus.mutate({ id: entry.id, status: e.target.value as TaskStatus })
-            }
-          >
-            {EDITABLE_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {STATUS_META[s].label}
-              </option>
-            ))}
-          </select>
+          <StatusSelect
+            value={(entry.status ?? "pending") as TaskStatus}
+            onChange={(status) => setStatus.mutate({ id: entry.id, status })}
+          />
         </div>
       )}
 

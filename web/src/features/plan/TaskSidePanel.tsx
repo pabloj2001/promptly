@@ -1,7 +1,8 @@
 import { useNavigate } from "react-router-dom";
 import { useTasks } from "../../lib/queries";
 import { EditableMetadata } from "../design/EditableMetadata";
-import { StatusBadge } from "../../components/StatusBadge";
+import { STATUS_META } from "../../lib/status";
+import type { MetadataEntry } from "../../lib/types";
 import { useUiStore } from "../../store";
 
 // Shared inspector for both Plan views (06): editable metadata + before/after
@@ -27,15 +28,24 @@ export function TaskSidePanel({
     .filter(Boolean);
   const after = (tasks ?? []).filter((t) => t.dependsOn?.includes(entry.id));
 
-  const link = (id: string, name: string) => (
-    <button
-      key={id}
-      className="block w-full truncate rounded px-2 py-1 text-left text-sm text-slate-700 hover:bg-slate-100"
-      onClick={() => onSelect(id)}
-    >
-      {name}
-    </button>
-  );
+  const taskRow = (t: MetadataEntry) => {
+    const meta = t.status ? STATUS_META[t.status] : null;
+    return (
+      <button
+        key={t.id}
+        className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-slate-700 hover:bg-slate-100"
+        onClick={() => onSelect(t.id)}
+      >
+        {meta && (
+          <span
+            title={meta.label}
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`}
+          />
+        )}
+        <span className="min-w-0 flex-1 truncate">{t.name}</span>
+      </button>
+    );
+  };
 
   return (
     <aside className="flex h-full w-80 flex-col border-l border-slate-200 bg-white">
@@ -56,7 +66,7 @@ export function TaskSidePanel({
           {before.length === 0 ? (
             <p className="px-2 text-xs text-slate-400">None</p>
           ) : (
-            before.map((t) => link(t!.id, t!.name))
+            before.map((t) => taskRow(t!))
           )}
         </div>
 
@@ -67,12 +77,7 @@ export function TaskSidePanel({
           {after.length === 0 ? (
             <p className="px-2 text-xs text-slate-400">None</p>
           ) : (
-            after.map((t) => (
-              <div key={t.id} className="flex items-center gap-1 px-2">
-                <StatusBadge status={t.status} />
-                {link(t.id, t.name)}
-              </div>
-            ))
+            after.map((t) => taskRow(t))
           )}
         </div>
       </div>
