@@ -58,10 +58,12 @@ A doc/task carries an `operation` ({type, status} — 01) while AI is generating
   or `POST /tasks` → the API returns immediately with a placeholder entry (operation running)
   → it appears in the sidebar with a spinner and is selected → body/metadata fill in when the
   background operation completes (no blocking).
-- **`Import` button:** import an existing doc without AI — a dialog to **paste** Markdown or
-  **upload a `.md` file**, pick the type + name, and `POST /docs/import` writes it verbatim
-  (synchronous). Available anytime in Design; also offered for the **project spec** in the
-  empty state (below).
+- **`Import` button:** import existing docs/tasks without AI — a dialog to pick the **type**
+  (Document or Task), then **upload one or more `.md` files** (each becomes its own entry) or
+  **paste** a single document with a name. Each `POST /docs/import` writes verbatim
+  (synchronous); the type routes it to the right collection (docs vs. tasks). Available anytime
+  in Design; the **project spec** import (single, fixed type) is offered in the empty state
+  (below).
 - **`Generate tasks from spec` button:** shown in the tasks section **when the project has no
   tasks yet** (and a `project_spec` exists). Calls `POST /tasks/generate-from-spec` (02/03):
   the AI breaks the spec into tasks, which appear as placeholders (spinners) and fill in

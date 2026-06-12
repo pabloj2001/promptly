@@ -89,8 +89,13 @@ export function useImportDoc() {
   return useMutation({
     mutationFn: ({ name, type, body }: { name: string; type: DocType; body: string }) =>
       api.importDoc(name, type, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["docs", project] });
+    onSuccess: (_data, { type }) => {
+      if (type === "task") {
+        qc.invalidateQueries({ queryKey: ["tasks", project] });
+        qc.invalidateQueries({ queryKey: ["taskGraph", project] });
+      } else {
+        qc.invalidateQueries({ queryKey: ["docs", project] });
+      }
       qc.invalidateQueries({ queryKey: ["projects"] });
     },
   });

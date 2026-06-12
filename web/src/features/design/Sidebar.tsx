@@ -161,7 +161,6 @@ export function Sidebar({
       <ImportDialog
         open={importing}
         onOpenChange={setImporting}
-        type="doc"
         onImported={onSelect}
       />
 

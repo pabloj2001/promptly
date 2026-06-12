@@ -62,7 +62,7 @@ export function EmptyState({ onCreated }: { onCreated: (id: string) => void }) {
       <ImportDialog
         open={importing}
         onOpenChange={setImporting}
-        type="project_spec"
+        fixedType="project_spec"
         onImported={onCreated}
       />
     </div>

@@ -118,8 +118,9 @@ loading state meanwhile (05).
   ids) and then runs each task's body generation through the normal `generate_task` flow, so
   the tasks appear immediately and fill in asynchronously (02/05/06).
 
-> **Import is not generation.** Importing a doc (paste/upload, 05) bypasses Claude entirely —
-> the API writes the provided body verbatim. No template, no CLI call.
+> **Import is not generation.** Importing a doc or task (paste/upload one or more files, 05)
+> bypasses Claude entirely — the API writes each provided body verbatim, routing by the chosen
+> type (doc vs. task). No template, no CLI call.
 
 ## Mode B — stateful execution session
 Used by the Execution Engine ([07](./07-execution-engine.md)). The session:
