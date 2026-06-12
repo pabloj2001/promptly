@@ -101,7 +101,9 @@ function Row({
     >
       {meta && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`} />}
       <span className="min-w-0 flex-1 truncate">{task.name}</span>
-      {task.status === "in_progress" && <Spinner className="text-blue-500" />}
+      {task.status === "in_progress" && task.executionId && (
+        <Spinner className="text-blue-500" />
+      )}
     </button>
   );
 }

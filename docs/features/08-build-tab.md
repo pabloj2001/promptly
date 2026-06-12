@@ -26,16 +26,20 @@ Order and default state per spec:
 2. **Blocked** — collapsed by default.
 3. **Pending** — collapsed by default.
 4. **Done** — collapsed by default.
-(`removed` not shown.) Each row: task name + status badge + (if running) a live activity
-hint. Selecting a task loads it into the main view and updates `selectedTaskId` (shared with
-Plan via the ui store, 04). Sourced from `useTaskGraph()`/task list, grouped by status.
+(`removed` not shown.) Each row: a status dot + task name + a spinner **only when an
+execution has actually started** (status `in_progress` *and* an `executionId` exists) — a
+manually-set `in_progress` with no execution shows no spinner. Selecting a task loads it into
+the main view and updates `selectedTaskId` (shared with Plan via the ui store, 04). Sourced
+from `useTaskGraph()`/task list, grouped by status.
 
 ## Info view — depends on the selected task's status
 **Pending** → a **Begin execution** button. Click → `POST /executions {taskId}` (07): creates
 the worktree + starts the run, task flips to `in_progress`, view switches to the running UI.
 
 **In progress** → live execution UI, driven by `useExecutionStream(executionId)` (SSE, 04):
-- Task metadata header (name, group, deps).
+- **Task metadata block:** the full task metadata (status, group, description, depends-on
+  names, custom fields, created/updated, execution id, related PRs) plus an **Open in Design**
+  button that routes to this task's Design doc. Shown for every status, not just in-progress.
 - **Steps:** the `steps` array from `progress.json`, each with status
   (pending/in_progress/done/skipped). The plan is seeded up front by the planning phase (07)
   — shown as "Planning steps…" until it arrives — then updates live as MCP `complete_step` /

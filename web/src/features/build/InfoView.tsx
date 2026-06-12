@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   useAnswerQuestion,
   useCancelExecution,
@@ -7,8 +8,10 @@ import {
   useExecution,
   useSendFeedback,
   useStartExecution,
+  useTasks,
 } from "../../lib/queries";
 import { useExecutionStream } from "../../lib/sse";
+import { useUiStore } from "../../store";
 import { StatusBadge } from "../../components/StatusBadge";
 import { Spinner } from "../../components/Spinner";
 import type {
@@ -27,7 +30,7 @@ export function InfoView({ task }: { task: MetadataEntry }) {
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-5">
-      <Header task={task} />
+      <TaskMeta task={task} />
 
       {!executionId ? (
         <section className="rounded-lg border border-slate-200 bg-white p-5 text-center">
@@ -55,19 +58,81 @@ export function InfoView({ task }: { task: MetadataEntry }) {
   );
 }
 
-function Header({ task }: { task: MetadataEntry }) {
+function TaskMeta({ task }: { task: MetadataEntry }) {
+  const { data: tasks } = useTasks();
+  const navigate = useNavigate();
+  const project = useUiStore((s) => s.activeProject);
+
+  const deps = (task.dependsOn ?? []).map(
+    (id) => tasks?.find((t) => t.id === id)?.name ?? id,
+  );
+  const custom = Object.entries(task.custom ?? {});
+  const fmt = (s?: string) => (s ? new Date(s).toLocaleString() : "—");
+
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <StatusBadge status={task.status} />
-      {task.taskGroup && (
-        <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-          {task.taskGroup}
-        </span>
-      )}
-      {task.description && (
-        <p className="w-full text-sm text-slate-500">{task.description}</p>
-      )}
-    </div>
+    <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
+      <div className="flex items-center gap-2">
+        <StatusBadge status={task.status} />
+        {task.taskGroup && (
+          <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+            {task.taskGroup}
+          </span>
+        )}
+        <button
+          className="ml-auto rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+          onClick={() =>
+            navigate(
+              `/p/${encodeURIComponent(project ?? "")}/design?doc=${task.id}`,
+            )
+          }
+        >
+          Open in Design
+        </button>
+      </div>
+
+      <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-sm">
+        <Field label="Description">{task.description || "—"}</Field>
+        <Field label="Depends on">{deps.length ? deps.join(", ") : "None"}</Field>
+        {custom.map(([k, v]) => (
+          <Field key={k} label={k}>
+            {String(v)}
+          </Field>
+        ))}
+        <Field label="Created">{fmt(task.createdAt)}</Field>
+        <Field label="Updated">{fmt(task.updatedAt)}</Field>
+        <Field label="Execution">
+          {task.executionId ? (
+            <code className="text-xs text-slate-600">{task.executionId}</code>
+          ) : (
+            "Not started"
+          )}
+        </Field>
+        {(task.relatedPrs ?? []).length > 0 && (
+          <Field label="PRs">
+            {task.relatedPrs.map((pr) => (
+              <a
+                key={pr.url}
+                href={pr.url}
+                target="_blank"
+                rel="noreferrer"
+                className="mr-3 text-blue-600 hover:underline"
+              >
+                #{pr.number} ({pr.state})
+              </a>
+            ))}
+          </Field>
+        )}
+      </dl>
+    </section>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <dt className="text-xs uppercase tracking-wide text-slate-400">{label}</dt>
+      <dd className="min-w-0 break-words text-slate-700">{children}</dd>
+    </>
   );
 }
 
