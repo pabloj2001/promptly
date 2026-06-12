@@ -105,6 +105,17 @@ export function LiveEditor({
     return () => document.removeEventListener("mousedown", onDown);
   }, [active]);
 
+  // Focus the active block's textarea once it mounts (autoFocus alone can be lost to
+  // the browser's default mousedown focus handling when swapping a div for a textarea).
+  useEffect(() => {
+    const ta = taRef.current;
+    if (active !== null && ta) {
+      ta.focus();
+      const len = ta.value.length;
+      ta.setSelectionRange(len, len);
+    }
+  }, [active]);
+
   const blockStart = (idx: number) =>
     blocks.slice(0, idx).reduce((n, b) => n + b.src.length, 0);
 
@@ -154,7 +165,12 @@ export function LiveEditor({
           <div
             key={i}
             className="cursor-text rounded px-1 hover:bg-slate-50"
-            onMouseDown={() => setActive(i)}
+            // preventDefault so the browser's default focus handling doesn't steal
+            // focus from the textarea we're about to mount.
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setActive(i);
+            }}
           >
             <article className="prose prose-slate max-w-none prose-pre:border prose-pre:border-slate-200 prose-pre:bg-slate-100 prose-pre:text-slate-800">
               <Markdown remarkPlugins={[remarkGfm]}>{b.src.trim() || " "}</Markdown>
