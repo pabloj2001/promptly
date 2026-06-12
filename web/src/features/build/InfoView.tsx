@@ -302,7 +302,7 @@ function Review({
         {createPr.isError && (
           <span className="text-sm text-red-600">{(createPr.error as Error).message}</span>
         )}
-        {task.relatedPRs.map((pr) => (
+        {(task.relatedPrs ?? []).map((pr) => (
           <a
             key={pr.url}
             href={pr.url}

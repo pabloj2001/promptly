@@ -41,7 +41,7 @@ export interface MetadataEntry {
   description: string;
   status?: TaskStatus | null;
   taskGroup?: string | null;
-  relatedPRs: RelatedPR[];
+  relatedPrs: RelatedPR[];
   dependsOn: string[];
   custom: Record<string, unknown>;
   executionId?: string | null;

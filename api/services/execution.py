@@ -362,7 +362,7 @@ class ExecutionManager:
         existing = [p.model_dump(by_alias=True) for p in task.related_prs]
         existing.append(pr.model_dump(by_alias=True))
         self.storage.patch_metadata(
-            root, project, "tasks", prog.task_id, {"relatedPRs": existing})
+            root, project, "tasks", prog.task_id, {"relatedPrs": existing})
         return pr.model_dump(by_alias=True)
 
     async def diff(self, root: str, project: str, execution_id: str) -> dict:
