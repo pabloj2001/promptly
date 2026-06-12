@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { usePatchMetadata, useSetTaskStatus } from "../../lib/queries";
+import { useMemo, useState } from "react";
+import { usePatchMetadata, useSetTaskStatus, useTasks } from "../../lib/queries";
 import { STATUS_META } from "../../lib/status";
 import type { MetadataEntry, TaskStatus } from "../../lib/types";
 import { collectionForType } from "./util";
@@ -18,8 +18,18 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
   const collection = collectionForType(entry.type);
   const patch = usePatchMetadata();
   const setStatus = useSetTaskStatus();
+  const { data: tasks } = useTasks();
   const [newKey, setNewKey] = useState("");
   const [newVal, setNewVal] = useState("");
+  const [addingGroup, setAddingGroup] = useState(false);
+
+  // Existing groups across all tasks (plus this entry's, in case it's the only one).
+  const groups = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of tasks ?? []) if (t.taskGroup) set.add(t.taskGroup);
+    if (entry.taskGroup) set.add(entry.taskGroup);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [tasks, entry.taskGroup]);
 
   const savePatch = (p: Record<string, unknown>) =>
     patch.mutate({ collection, id: entry.id, patch: p });
@@ -67,14 +77,44 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
 
       <div>
         <label className="text-xs uppercase tracking-wide text-slate-400">Group</label>
-        <input
-          className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none"
-          defaultValue={entry.taskGroup ?? ""}
-          onBlur={(e) => {
-            if (e.target.value !== (entry.taskGroup ?? ""))
-              savePatch({ taskGroup: e.target.value || null });
-          }}
-        />
+        {addingGroup ? (
+          <input
+            autoFocus
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none"
+            placeholder="New group name"
+            defaultValue=""
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              if (e.key === "Escape") setAddingGroup(false);
+            }}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              if (v && v !== (entry.taskGroup ?? "")) savePatch({ taskGroup: v });
+              setAddingGroup(false);
+            }}
+          />
+        ) : (
+          <select
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none"
+            value={entry.taskGroup ?? ""}
+            onChange={(e) => {
+              if (e.target.value === "__new__") {
+                setAddingGroup(true);
+                return;
+              }
+              const v = e.target.value;
+              if (v !== (entry.taskGroup ?? "")) savePatch({ taskGroup: v || null });
+            }}
+          >
+            <option value="">(none)</option>
+            {groups.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+            <option value="__new__">+ Add new group…</option>
+          </select>
+        )}
       </div>
 
       {entry.dependsOn.length > 0 && (
