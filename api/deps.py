@@ -8,6 +8,7 @@ name to its root via the registry, 404ing if unknown.
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 
 from fastapi import Depends, Query
@@ -20,11 +21,21 @@ from .storage import NotFoundError, StorageService
 # Process-wide singletons.
 _storage = StorageService()
 _bus = SSEBus()
+
+# Shared secret for the internal callback endpoints the execution helpers (MCP
+# server, PreToolUse hook) hit. Generated per process unless pinned via env.
+_internal_token = os.environ.get("PROMPTLY_TOKEN") or secrets.token_urlsafe(24)
+# Where those helpers reach this server (they run on the same host).
+_api_url = os.environ.get("PROMPTLY_API_URL", "http://127.0.0.1:8000")
+
 # PROMPTLY_MODEL overrides the default model (handy for cheap smoke tests).
 _claude = ClaudeService(
-    _storage, default_model=os.environ.get("PROMPTLY_MODEL", "claude-opus-4-8")
+    _storage,
+    default_model=os.environ.get("PROMPTLY_MODEL", "claude-opus-4-8"),
+    internal_token=_internal_token,
+    api_url=_api_url,
 )
-_execution = ExecutionManager(_storage, _bus)
+_execution = ExecutionManager(_storage, _bus, claude=_claude)
 _operations = OperationManager(_storage, _claude)
 
 
@@ -42,6 +53,10 @@ def get_execution() -> ExecutionManager:
 
 def get_operations() -> OperationManager:
     return _operations
+
+
+def get_internal_token() -> str:
+    return _internal_token
 
 
 @dataclass

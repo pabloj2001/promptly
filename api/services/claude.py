@@ -17,10 +17,15 @@ Design (validated against CLI v2.1.173 + the permissions docs):
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
-from ..models import CamelModel, Comment, DocType
+from ..models import CamelModel, Comment, DocType, PermissionRequest
 from ..storage import StorageService
 from ..storage import paths
 from .permissions import build_cli_permissions
@@ -28,6 +33,26 @@ from .prompts import PromptLibrary
 
 # Rough character budget for any inline content we still pass (e.g. a doc body in chat).
 _BODY_BUDGET = 200_000
+
+# Promptly's own app root (the dir containing the ``api`` package) — used as
+# PYTHONPATH so the CLI's child helpers (MCP server, hook) can import ``api.*``.
+_APP_ROOT = Path(__file__).resolve().parents[2]
+
+# Edit-family tool names the PreToolUse hook gates by path.
+_EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+
+
+@dataclass
+class RunSpec:
+    """A fully-built ``claude -p`` execution command for the run loop (07).
+
+    ExecutionManager owns the subprocess (so it can register + kill it); this just
+    carries everything needed to spawn it.
+    """
+
+    args: list[str]
+    env: dict[str, str]
+    cwd: str
 
 
 class ClaudeError(Exception):
@@ -68,12 +93,19 @@ class ClaudeService:
         default_model: str = "claude-opus-4-8",
         timeout: float = 600.0,
         prompts: Optional[PromptLibrary] = None,
+        internal_token: str = "",
+        api_url: str = "http://127.0.0.1:8000",
+        python: Optional[str] = None,
     ) -> None:
         self.storage = storage
         self.cli = cli_path
         self.default_model = default_model
         self.timeout = timeout
         self.prompts = prompts or PromptLibrary()
+        # Execution-session config (07): the helpers Claude spawns call back here.
+        self.internal_token = internal_token
+        self.api_url = api_url
+        self.python = python or sys.executable
 
     # ── CLI invocation ──────────────────────────────────────────────────────────
 
@@ -141,6 +173,113 @@ class ClaudeService:
 
     def _project_path(self, root: str, project: str) -> str:
         return str(paths.project_dir(root, project)) + "/"
+
+    # ── Mode B — execution sessions (07) ─────────────────────────────────────────
+
+    def render_execute_prompt(
+        self, root: str, project: str, *, task_name: str, task_file: str,
+        worktree: str, dependency_names: list[str],
+    ) -> str:
+        return self.prompts.render(
+            "execute_task",
+            project_name=project,
+            project_path=self._project_path(root, project),
+            task_name=task_name,
+            task_file=task_file,
+            worktree=worktree,
+            dependency_names=dependency_names,
+        )
+
+    def build_run_command(
+        self,
+        root: str,
+        project: str,
+        *,
+        execution_id: str,
+        worktree: str,
+        prompt: str,
+        session_id: Optional[str] = None,
+        granted: Optional[list[PermissionRequest]] = None,
+    ) -> RunSpec:
+        """Compile a build-session ``claude -p`` invocation (07).
+
+        Runs in the worktree with the *execution* permissions profile (09), the MCP
+        progress server + PreToolUse approval hook registered, and whole-repo read
+        access via ``--add-dir``. ``granted`` carries already-approved permission
+        requests so a resumed run pre-allows them (both to the CLI and the hook).
+        """
+        cfg = self.storage.read_permissions(root, project)
+        cli = build_cli_permissions(cfg, "execution", repo_root=root)
+        settings = json.loads(cli.settings_json)
+        allow: list[str] = settings["permissions"]["allow"]
+
+        allowed_bash = _bash_patterns(allow)
+        allowed_paths: list[str] = []
+        extra_tools: list[str] = []
+        for g in granted or []:
+            if g.tool == "Bash":
+                cmd = str(g.request.get("command", "")).strip()
+                if cmd:
+                    allowed_bash.append(cmd)
+                    extra_tools.append(f"Bash({cmd})")
+            elif g.tool in _EDIT_TOOLS:
+                path = str(g.request.get("path", "")).strip()
+                if path:
+                    allowed_paths.append(os.path.realpath(path))
+                    extra_tools.append(f"{g.tool}({path})")
+        allow.extend(extra_tools)
+
+        # Register the PreToolUse approval hook (09). It runs in Promptly's venv and
+        # imports api.* via PYTHONPATH (set in env below).
+        hook_cmd = f"{_shquote(self.python)} -m api.hooks.pretooluse"
+        settings["hooks"] = {
+            "PreToolUse": [{
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+                "hooks": [{"type": "command", "command": hook_cmd, "timeout": 60}],
+            }]
+        }
+
+        callback_env = {
+            "PROMPTLY_API_URL": self.api_url,
+            "PROMPTLY_PROJECT": project,
+            "PROMPTLY_EXECUTION_ID": execution_id,
+            "PROMPTLY_TOKEN": self.internal_token,
+        }
+        mcp_config = {
+            "mcpServers": {
+                "promptly": {
+                    "command": self.python,
+                    "args": ["-m", "api.mcp_server"],
+                    "env": {**callback_env, "PYTHONPATH": str(_APP_ROOT)},
+                }
+            }
+        }
+
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(_APP_ROOT),
+            **callback_env,
+            "PROMPTLY_WORKTREE": worktree,
+            "PROMPTLY_ALLOWED_BASH": json.dumps(allowed_bash),
+            "PROMPTLY_ALLOWED_PATHS": json.dumps(allowed_paths),
+        }
+
+        args = [
+            self.cli, "-p", prompt,
+            "--output-format", "stream-json", "--verbose",
+            "--model", self.default_model,
+            "--settings", json.dumps(settings),
+            "--permission-mode", cli.permission_mode,
+            "--mcp-config", json.dumps(mcp_config),
+            "--strict-mcp-config",
+        ]
+        for d in cli.add_dirs:
+            args += ["--add-dir", d]
+        if extra_tools:
+            args += ["--allowedTools", *extra_tools]
+        if session_id:
+            args += ["--resume", session_id]
+        return RunSpec(args=args, env=env, cwd=worktree)
 
     # ── Mode A — generation ──────────────────────────────────────────────────────
 
@@ -281,6 +420,20 @@ class ClaudeService:
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────────
+
+
+def _bash_patterns(allow: list[str]) -> list[str]:
+    """Extract fnmatch globs from ``Bash(<glob>)`` allow entries for the hook."""
+    out: list[str] = []
+    for entry in allow:
+        if entry.startswith("Bash(") and entry.endswith(")"):
+            out.append(entry[5:-1].strip())
+    return out
+
+
+def _shquote(s: str) -> str:
+    import shlex
+    return shlex.quote(s)
 
 
 def _strip_fences(text: str) -> str:

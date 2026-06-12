@@ -109,6 +109,15 @@ async def create_pr(
     return await em.create_pr(ap.root, ap.name, execution_id)
 
 
+@router.post("/{execution_id}/cancel", response_model=ProgressState)
+async def cancel(
+    execution_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    em: ExecutionManager = Depends(get_execution),
+):
+    return await em.cancel(ap.root, ap.name, execution_id)
+
+
 @router.get("/{execution_id}/diff")
 async def diff(
     execution_id: str,

@@ -9,6 +9,17 @@ session that builds the task and reports progress via MCP tools, persists everyt
 `executions/<execution-id>/`, and broadcasts live updates over SSE. This is the most complex
 backend piece — build it after the CLI wrapper (03) works for one-shot generation.
 
+**Interaction model — kill-and-resume (not blocking).** When the build session needs the
+user (a question or a permission request), we do **not** hold the process open waiting.
+A helper records the request into `progress.json`, we set `awaiting_input`, emit SSE, and
+**kill the subprocess**. When the user responds, we re-spawn with `--resume <sessionId>`
+(captured from the run's `stream-json` init event and persisted) — and for a *granted*
+permission we add the specific tool to `--allowedTools` so the retried action goes through.
+Because all state lives on disk, this survives a server restart. The MCP progress server
+and the `PreToolUse` hook run as child processes of `claude -p` and report back over
+Promptly's localhost **internal HTTP API** (token-guarded, `X-Promptly-Token`); uvicorn
+stays the single writer of `progress.json` and owns the kill/SSE control flow.
+
 ## Lifecycle
 ```
 pending ──start──▶ in_progress ──report_done──▶ in_review
@@ -37,9 +48,13 @@ tracks the run loop.
    UI can subscribe to the stream.
 
 ## The run loop
-Uses `ClaudeService.run_session()` (03) with `cwd = worktree/`, the **execution** permissions
-profile compiled into `--settings`/`--permission-mode`/`--add-dir` (09), the MCP server
-registered and bound to this `executionId`, and an `on_event` callback.
+ExecutionManager spawns a `claude -p` build session built by
+`ClaudeService.build_run_command()` (03): `cwd = worktree/`, `--output-format stream-json`,
+the **execution** permissions profile compiled into `--settings`/`--permission-mode`/`--add-dir`
+(09), the MCP server (`--mcp-config` + `--strict-mcp-config`) and the `PreToolUse` hook
+registered, all bound to this `executionId` via env. ExecutionManager owns the subprocess
+(in a registry) so it can kill it; it drains `stream-json` only to capture the `session_id`
+from the init event (progress itself comes from the MCP tools, not text parsing).
 - **Prompt:** rendered from `execute_task.md.j2` (09). Claude is told to **read first** —
   the task spec, the project spec, its dependencies' specs, `CLAUDE.md`, and the relevant
   source (it has whole-repo read access via the execution profile) — then plan via
@@ -48,12 +63,18 @@ registered and bound to this `executionId`, and an `on_event` callback.
 - **Progress writes come from the MCP tools**, not from parsing model text: each tool call
   mutates this execution's `progress.json` (via StorageService, locked atomic write) and
   publishes an event to the SSE bus. This is why MCP is preferred over Claude editing JSON.
-- **Session id:** capture from the stream and persist to `progress.json` as soon as known.
-- **Completion:** `report_done` → **commit the worktree changes once** with a generated
-  message (single commit per `report_done`; subsequent feedback rounds add their own commit),
-  set `progress.status = completed`, task `status = in_review`, emit `status` SSE.
-- **Failure:** non-zero exit / crash → `progress.status = failed`, surface error; leave task
-  `in_progress` with an error flag so the user can retry/feedback.
+- **Session id:** capture from the `stream-json` init event and persist to `progress.json`
+  as soon as known (enables every later `--resume`).
+- **Completion:** `report_done` records `doneSummary` and stops the process; on exit the run
+  loop **commits the worktree changes once** with a generated message (single commit per
+  `report_done`; subsequent feedback rounds add their own commit), sets
+  `progress.status = completed`, task `status = in_review`, emits `status` SSE.
+- **Failure:** non-zero exit / crash (with no recorded pause) → `progress.status = failed`,
+  surface stderr; the user can retry/feedback.
+- **Why exit?** The run loop distinguishes *why* a process ended via an interrupt reason set
+  when we kill it: `input` (question/permission — stay `awaiting_input`, do nothing),
+  `done` (finalize/commit), `cancel` (failed); a natural exit-0 with no reason also finalizes,
+  a non-zero exit fails.
 
 ## Mid-run interactions (resume the session)
 All use `--resume <sessionId>` (03):
@@ -102,17 +123,19 @@ it may **read the whole repo** for context.
   acceptEdits` (auto-accept edits in the working dir) plus deny rules for writes/exec outside
   the worktree. The worktree isolates all changes from the user's tree until a PR.
 - **Flagged requests go back to the user — via a `PreToolUse` hook, not an MCP tool.** This
-  CLI has **no `--permission-prompt-tool`** (verified, v2.1.173). Instead the settings we pass
-  register a **`PreToolUse` hook** (09): when Claude attempts something out of scope (write/exec
-  outside the worktree, a tool not on the allowlist), the hook records a **pending permission
-  request**, signals Promptly, and **blocks** (waiting) until the user decides — then returns
-  allow/deny to the CLI.
-  - Add `pendingPermissions: [{ id, tool, request, decision: null, askedAt }]` to
-    `progress.json`; the hook sets `progress.status = awaiting_input` and emits an SSE
-    `permission` event. `POST /executions/{id}/permission {requestId, decision}` records the
-    answer; the waiting hook reads it and returns the decision to the CLI; status resumes
-    `running`. (The hook ↔ Promptly channel can be the Promptly HTTP API or a small file the
-    hook polls under the execution dir — pick the simpler at implementation time.)
+  CLI has **no `--permission-prompt-tool`** (verified, v2.1.175). Instead the settings we pass
+  register a **`PreToolUse` hook** (09): it fires before Write/Edit/Bash calls and decides
+  `allow` (in-worktree edits, allow-listed Bash commands) vs. **out of scope** (write/exec
+  outside the worktree, a Bash command not on the allowlist). For out-of-scope calls the hook
+  POSTs a **permission request** to Promptly's internal API and **denies** the call (fail
+  closed even if the callback fails). Reads pass through to the normal repo-wide read flow.
+  - The callback appends to `pendingPermissions: [{ id, tool, request, decision: null, askedAt }]`
+    in `progress.json`, sets `progress.status = awaiting_input`, emits an SSE `permission`
+    event, and **kills the subprocess** (kill-and-resume — the hook does not block).
+    `POST /executions/{id}/permission {requestId, decision}` records the decision and
+    **re-spawns** with `--resume`; on `allow` the granted tool is added to `--allowedTools`
+    (and the hook's allow-set) so the retried action succeeds; on `deny` Claude is told to
+    find another approach.
 - **Widening access:** the user edits `permissions.json` to grant more (extra read dirs,
   additional allowed tools/commands). Defaults are sensible without it (09).
 
@@ -129,7 +152,12 @@ it may **read the whole repo** for context.
 9. Tests: worktree lifecycle, MCP→progress→SSE path, permission-hook flow, resume flows
    (mock ClaudeService).
 
-## Open questions
-- PR tooling: require `gh` CLI vs. a GitHub token. `gh` reuses the user's auth — prefer it.
-- What happens to in-flight executions if the server restarts? v1: mark orphaned running
-  executions `failed` on startup (the subprocess died with the server); user retries.
+## Resolved decisions
+- **Interaction model:** kill-and-resume (above), not a blocking hook/tool. Questions +
+  permission requests are persisted to `progress.json`, the process is killed, and the user's
+  response re-spawns it with `--resume` (+ `--allowedTools` for grants).
+- **Helper ↔ Promptly channel:** localhost internal HTTP API, token-guarded. uvicorn is the
+  single writer of `progress.json` and owns SSE + the kill.
+- **PR tooling:** `gh` CLI (reuses the user's GitHub auth).
+- **Server restart:** in-flight executions die with the server; on startup we flip any
+  `running`/`awaiting_input` execution to `failed` so the user can retry.

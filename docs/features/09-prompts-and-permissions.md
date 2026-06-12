@@ -121,10 +121,12 @@ route a permission decision back to us is a **`PreToolUse` hook**: a small scrip
 in the settings we pass, which fires before a tool call and can allow / ask / deny it.
 
 For execution (07), the hook recognizes out-of-scope actions (write/exec outside the
-worktree, a tool not on the allowlist), records a **pending permission request** in the
-execution's `progress.json`, emits the SSE `permission` event, and **blocks** until the user
-answers in the Build UI; the user's decision is returned to the CLI. (Reads and in-worktree
-edits pass through without a prompt.) Details live in [07](./07-execution-engine.md).
+worktree, a Bash command not on the allowlist), POSTs a **pending permission request** to
+Promptly's internal API (which records it in the execution's `progress.json`, emits the SSE
+`permission` event, and **kills the subprocess**), and **denies** the call. It does **not**
+block — the kill-and-resume model means the user's decision re-spawns the session with
+`--resume` (granted tools added to `--allowedTools`). Reads and in-worktree edits pass
+through without a prompt. Details live in [07](./07-execution-engine.md).
 
 ## Implementation steps
 1. `prompts/` dir + Jinja2 + `PromptLibrary.render()`; port existing prompts to `*.md.j2`.

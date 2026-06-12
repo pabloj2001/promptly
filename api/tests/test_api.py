@@ -267,13 +267,6 @@ def test_metadata_custom_patch(client, proj):
 # ── executions (02 surface) ──────────────────────────────────────────────────────
 
 
-def test_start_execution_not_implemented_yet(client, proj):
-    t = client.post("/tasks", params=q(proj), json={"prompt": "t", "name": "T"}).json()
-    r = client.post("/executions", params=q(proj), json={"taskId": t["id"]})
-    assert r.status_code == 501
-    assert r.json()["error"]["code"] == "not_implemented"
-
-
 def test_diff_comments_storage(client, proj, storage, root):
     # progress.json must exist for read; create one directly via storage.
     storage.create_execution(root, "Demo", "exec-9", "task-9")

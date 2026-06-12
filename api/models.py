@@ -157,8 +157,12 @@ class Step(CamelModel):
 class ProgressState(CamelModel):
     execution_id: str
     task_id: str
+    branch: Optional[str] = None
+    base_sha: Optional[str] = None
     session_id: Optional[str] = None
     status: ProgressStatus = ProgressStatus.running
+    error: Optional[str] = None
+    done_summary: Optional[str] = None
     pending_questions: list[Question] = Field(default_factory=list)
     pending_permissions: list[PermissionRequest] = Field(default_factory=list)
     steps: list[Step] = Field(default_factory=list)

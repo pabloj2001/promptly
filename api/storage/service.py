@@ -23,9 +23,14 @@ from ..models import (
     DocType,
     MetadataEntry,
     Operation,
+    PermissionRequest,
     PermissionsConfig,
     ProgressState,
+    ProgressStatus,
     ProjectDescriptor,
+    Question,
+    Step,
+    StepStatus,
     TaskStatus,
 )
 from . import comments as comment_io
@@ -487,6 +492,12 @@ class StorageService:
         write_json(paths.diff_comments_path(root, name, execution_id), {"byCommit": {}})
         return state
 
+    def list_executions(self, root: str, name: str) -> list[str]:
+        d = paths.executions_dir(root, name)
+        if not d.exists():
+            return []
+        return [p.name for p in d.iterdir() if p.is_dir()]
+
     def read_progress(
         self, root: str, name: str, execution_id: str
     ) -> Optional[ProgressState]:
@@ -517,3 +528,153 @@ class StorageService:
             cf.model_dump(by_alias=True),
         )
         return comment
+
+    # ── Progress mutations (07) ──────────────────────────────────────────────────
+    #
+    # All progress.json updates funnel through ``_mutate_progress`` so concurrent
+    # writers (the run loop, MCP callbacks, the permission hook) serialize on the
+    # file lock and never clobber each other.
+
+    def _mutate_progress(self, root: str, name: str, execution_id: str, fn) -> ProgressState:
+        from .atomic import lock_for
+
+        path = paths.progress_path(root, name, execution_id)
+        with lock_for(path):
+            raw = read_json(path)
+            if raw is None:
+                raise NotFoundError(f"execution {execution_id} not found")
+            state = ProgressState.model_validate(raw)
+            fn(state)
+            state.updated_at = _now()
+            write_json(path, state.model_dump(by_alias=True))
+            return state
+
+    def set_execution_meta(
+        self, root: str, name: str, execution_id: str, *,
+        branch: Optional[str] = None, base_sha: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> ProgressState:
+        def fn(s: ProgressState) -> None:
+            if branch is not None:
+                s.branch = branch
+            if base_sha is not None:
+                s.base_sha = base_sha
+            if session_id is not None:
+                s.session_id = session_id
+        return self._mutate_progress(root, name, execution_id, fn)
+
+    def set_execution_status(
+        self, root: str, name: str, execution_id: str,
+        status: ProgressStatus | str, *, error: Optional[str] = None,
+    ) -> ProgressState:
+        val = status.value if isinstance(status, ProgressStatus) else status
+
+        def fn(s: ProgressState) -> None:
+            s.status = val
+            s.error = error
+        return self._mutate_progress(root, name, execution_id, fn)
+
+    def set_done_summary(
+        self, root: str, name: str, execution_id: str, summary: str
+    ) -> ProgressState:
+        def fn(s: ProgressState) -> None:
+            s.done_summary = summary
+        return self._mutate_progress(root, name, execution_id, fn)
+
+    def plan_steps(
+        self, root: str, name: str, execution_id: str, titles: list[str]
+    ) -> ProgressState:
+        def fn(s: ProgressState) -> None:
+            s.steps = [
+                Step(id=_new_id(), title=t, status=StepStatus.pending)
+                for t in titles
+            ]
+        return self._mutate_progress(root, name, execution_id, fn)
+
+    def add_step(
+        self, root: str, name: str, execution_id: str, title: str, detail: str = ""
+    ) -> ProgressState:
+        def fn(s: ProgressState) -> None:
+            s.steps.append(Step(id=_new_id(), title=title, detail=detail))
+        return self._mutate_progress(root, name, execution_id, fn)
+
+    def update_step(
+        self, root: str, name: str, execution_id: str, *,
+        step_id: Optional[str] = None, title: Optional[str] = None,
+        status: Optional[StepStatus | str] = None, detail: Optional[str] = None,
+    ) -> ProgressState:
+        """Update a step by id or (failing that) by matching title."""
+        status_val = status.value if isinstance(status, StepStatus) else status
+
+        def fn(s: ProgressState) -> None:
+            match = None
+            for st in s.steps:
+                if step_id and st.id == step_id:
+                    match = st
+                    break
+                if title and st.title == title:
+                    match = st
+            if match is None and title:  # unknown title -> treat as new step
+                match = Step(id=_new_id(), title=title)
+                s.steps.append(match)
+            if match is None:
+                return
+            if status_val is not None:
+                match.status = status_val
+                if status_val == StepStatus.in_progress.value and not match.started_at:
+                    match.started_at = _now()
+                if status_val in (StepStatus.done.value, StepStatus.skipped.value):
+                    match.finished_at = _now()
+            if detail is not None:
+                match.detail = detail
+        return self._mutate_progress(root, name, execution_id, fn)
+
+    def add_question(
+        self, root: str, name: str, execution_id: str, question: str
+    ) -> tuple[ProgressState, Question]:
+        q = Question(id=_new_id(), question=question, asked_at=_now())
+
+        def fn(s: ProgressState) -> None:
+            s.pending_questions.append(q)
+            s.status = ProgressStatus.awaiting_input.value
+        return self._mutate_progress(root, name, execution_id, fn), q
+
+    def answer_question(
+        self, root: str, name: str, execution_id: str, question_id: str, answer: str
+    ) -> tuple[ProgressState, Question]:
+        answered: list[Question] = []
+
+        def fn(s: ProgressState) -> None:
+            for q in s.pending_questions:
+                if q.id == question_id:
+                    q.answer = answer
+                    answered.append(q)
+        state = self._mutate_progress(root, name, execution_id, fn)
+        if not answered:
+            raise NotFoundError(f"question {question_id} not found")
+        return state, answered[0]
+
+    def add_permission_request(
+        self, root: str, name: str, execution_id: str, tool: str, request: dict
+    ) -> tuple[ProgressState, PermissionRequest]:
+        pr = PermissionRequest(id=_new_id(), tool=tool, request=request, asked_at=_now())
+
+        def fn(s: ProgressState) -> None:
+            s.pending_permissions.append(pr)
+            s.status = ProgressStatus.awaiting_input.value
+        return self._mutate_progress(root, name, execution_id, fn), pr
+
+    def decide_permission(
+        self, root: str, name: str, execution_id: str, request_id: str, decision: str
+    ) -> tuple[ProgressState, PermissionRequest]:
+        decided: list[PermissionRequest] = []
+
+        def fn(s: ProgressState) -> None:
+            for pr in s.pending_permissions:
+                if pr.id == request_id:
+                    pr.decision = decision
+                    decided.append(pr)
+        state = self._mutate_progress(root, name, execution_id, fn)
+        if not decided:
+            raise NotFoundError(f"permission request {request_id} not found")
+        return state, decided[0]
