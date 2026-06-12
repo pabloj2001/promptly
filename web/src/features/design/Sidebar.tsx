@@ -22,6 +22,7 @@ export function Sidebar({
   const { data: docs } = useDocs();
   const { data: tasks } = useTasks();
   const [showRemoved, setShowRemoved] = useState(false);
+  const [metaOpen, setMetaOpen] = useState(true);
   const [newKind, setNewKind] = useState<NewKind>(null);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -88,8 +89,20 @@ export function Sidebar({
   return (
     <aside className="flex h-full w-72 flex-col border-r border-slate-200 bg-slate-50">
       {selected && (
-        <div className="border-b border-slate-200 p-3">
-          <EditableMetadata entry={selected} />
+        <div className="border-b-2 border-slate-300 bg-white shadow-sm">
+          <button
+            className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500 hover:bg-slate-50"
+            onClick={() => setMetaOpen((o) => !o)}
+          >
+            <span>
+              {metaOpen ? "▾" : "▸"} {selected.type === "task" ? "Task" : "Document"} details
+            </span>
+          </button>
+          {metaOpen && (
+            <div className="max-h-72 overflow-auto px-3 pb-3">
+              <EditableMetadata entry={selected} />
+            </div>
+          )}
         </div>
       )}
 
