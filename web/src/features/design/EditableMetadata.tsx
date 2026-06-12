@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { StatusBadge } from "../../components/StatusBadge";
 import { usePatchMetadata, useSetTaskStatus } from "../../lib/queries";
 import { STATUS_META } from "../../lib/status";
 import type { MetadataEntry, TaskStatus } from "../../lib/types";
@@ -37,22 +36,19 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
       {entry.type === "task" && (
         <div>
           <label className="text-xs uppercase tracking-wide text-slate-400">Status</label>
-          <div className="mt-1 flex items-center gap-2">
-            <StatusBadge status={entry.status} />
-            <select
-              className="rounded border border-slate-300 px-1.5 py-1 text-xs"
-              value={entry.status ?? "pending"}
-              onChange={(e) =>
-                setStatus.mutate({ id: entry.id, status: e.target.value as TaskStatus })
-              }
-            >
-              {EDITABLE_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {STATUS_META[s].label}
-                </option>
-              ))}
-            </select>
-          </div>
+          <select
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none"
+            value={entry.status ?? "pending"}
+            onChange={(e) =>
+              setStatus.mutate({ id: entry.id, status: e.target.value as TaskStatus })
+            }
+          >
+            {EDITABLE_STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {STATUS_META[s].label}
+              </option>
+            ))}
+          </select>
         </div>
       )}
 
