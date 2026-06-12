@@ -78,6 +78,11 @@ class TaskStub(CamelModel):
     depends_on: list[str] = []  # by task name
 
 
+class StepStub(CamelModel):
+    title: str
+    detail: str = ""
+
+
 class GenResult(CamelModel):
     text: str
     session_id: Optional[str] = None
@@ -176,9 +181,40 @@ class ClaudeService:
 
     # ── Mode B — execution sessions (07) ─────────────────────────────────────────
 
+    async def plan_execution_steps(
+        self, *, root: str, project: str, task_name: str, task_file: str,
+        dependency_names: list[str],
+    ) -> list[StepStub]:
+        """Planning phase (07): a separate, MCP-free generation call that breaks the
+        task into an ordered list of steps before the build session starts."""
+        pdir = paths.project_dir(root, project)
+        tf = pdir / task_file
+        task_spec = tf.read_text(encoding="utf-8")[:_BODY_BUDGET] if tf.exists() else ""
+        rendered = self.prompts.render(
+            "plan_steps",
+            project_name=project,
+            project_path=self._project_path(root, project),
+            repo_root=root,
+            task_name=task_name,
+            task_spec=task_spec,
+            dependency_names=dependency_names,
+        )
+        result = await self._invoke(rendered, **self._gen_cli_args(root, project))
+        parsed = _parse_structured(result.text, require="steps")
+        items = (parsed or {}).get("steps") if parsed else None
+        if not isinstance(items, list):
+            raise ClaudeError("could not parse step plan")
+        stubs: list[StepStub] = []
+        for it in items:
+            if isinstance(it, dict) and it.get("title"):
+                stubs.append(StepStub.model_validate(it))
+        if not stubs:
+            raise ClaudeError("step plan was empty")
+        return stubs
+
     def render_execute_prompt(
         self, root: str, project: str, *, task_name: str, task_file: str,
-        worktree: str, dependency_names: list[str],
+        worktree: str, dependency_names: list[str], steps: list,
     ) -> str:
         # Inline the task spec (Claude must have it verbatim). The project spec and
         # sibling docs/tasks are read by path from the worktree's own copies (the
@@ -195,6 +231,7 @@ class ClaudeService:
             project_name=project,
             task_name=task_name,
             task_spec=task_spec,
+            steps=[{"title": s.title, "detail": s.detail} for s in steps],
             project_spec_path=str(proj_in_wt / "project.md"),
             docs_dir=str(proj_in_wt / "docs"),
             tasks_dir=str(proj_in_wt / "tasks"),

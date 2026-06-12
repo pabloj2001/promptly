@@ -109,7 +109,7 @@ function RunBody({
         </div>
       )}
 
-      <Steps steps={progress.steps} />
+      <Steps steps={progress.steps} planning={running} />
 
       {awaiting && openPermissions.length > 0 && (
         <Permissions executionId={executionId} requests={openPermissions} />
@@ -125,9 +125,14 @@ function RunBody({
   );
 }
 
-function Steps({ steps }: { steps: Step[] }) {
+function Steps({ steps, planning }: { steps: Step[]; planning?: boolean }) {
   if (!steps.length)
-    return <p className="text-sm text-slate-400">No steps reported yet.</p>;
+    return (
+      <p className="flex items-center gap-2 text-sm text-slate-400">
+        {planning && <Spinner className="text-slate-400" />}
+        {planning ? "Planning steps…" : "No steps reported yet."}
+      </p>
+    );
   const icon = (s: Step["status"]) =>
     s === "done" ? "✓" : s === "in_progress" ? "" : s === "skipped" ? "–" : "○";
   return (

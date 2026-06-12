@@ -35,20 +35,13 @@ def _auth(token: str, expected: str) -> None:
 # ── request bodies ──────────────────────────────────────────────────────────────
 
 
-class PlanStepsBody(CamelModel):
-    titles: list[str]
-
-
-class AddStepBody(CamelModel):
-    title: str
-    detail: str = ""
-
-
-class UpdateStepBody(CamelModel):
+class CompleteStepBody(CamelModel):
     step_id: str | None = None
     title: str | None = None
-    status: str | None = None
-    detail: str | None = None
+
+
+class ReviseStepsBody(CamelModel):
+    steps: list[dict] = []
 
 
 class AskBody(CamelModel):
@@ -67,50 +60,33 @@ class PermissionRequestBody(CamelModel):
 # ── endpoints ───────────────────────────────────────────────────────────────────
 
 
-@router.post("/executions/{execution_id}/steps/plan")
-def plan_steps(
+@router.post("/executions/{execution_id}/steps/complete")
+def complete_step(
     execution_id: str,
-    body: PlanStepsBody,
+    body: CompleteStepBody,
     x_promptly_token: str = Header(""),
     ap: ActiveProject = Depends(get_active_project),
     em: ExecutionManager = Depends(get_execution),
     token: str = Depends(get_internal_token),
 ):
     _auth(x_promptly_token, token)
-    state = em.storage.plan_steps(ap.root, ap.name, execution_id, body.titles)
+    state = em.storage.complete_step(
+        ap.root, ap.name, execution_id, step_id=body.step_id, title=body.title)
     em.publish_progress(execution_id, "steps", state)
     return {"ok": True}
 
 
-@router.post("/executions/{execution_id}/steps/add")
-def add_step(
+@router.post("/executions/{execution_id}/steps/revise")
+def revise_steps(
     execution_id: str,
-    body: AddStepBody,
+    body: ReviseStepsBody,
     x_promptly_token: str = Header(""),
     ap: ActiveProject = Depends(get_active_project),
     em: ExecutionManager = Depends(get_execution),
     token: str = Depends(get_internal_token),
 ):
     _auth(x_promptly_token, token)
-    state = em.storage.add_step(ap.root, ap.name, execution_id, body.title, body.detail)
-    em.publish_progress(execution_id, "steps", state)
-    return {"ok": True}
-
-
-@router.post("/executions/{execution_id}/steps/update")
-def update_step(
-    execution_id: str,
-    body: UpdateStepBody,
-    x_promptly_token: str = Header(""),
-    ap: ActiveProject = Depends(get_active_project),
-    em: ExecutionManager = Depends(get_execution),
-    token: str = Depends(get_internal_token),
-):
-    _auth(x_promptly_token, token)
-    state = em.storage.update_step(
-        ap.root, ap.name, execution_id,
-        step_id=body.step_id, title=body.title, status=body.status, detail=body.detail,
-    )
+    state = em.storage.revise_steps(ap.root, ap.name, execution_id, body.steps)
     em.publish_progress(execution_id, "steps", state)
     return {"ok": True}
 
@@ -159,7 +135,25 @@ def report_done(
     token: str = Depends(get_internal_token),
 ):
     _auth(x_promptly_token, token)
+    prog = em.storage.read_progress(ap.root, ap.name, execution_id)
+    incomplete = [
+        s.title for s in (prog.steps if prog else [])
+        if s.status not in ("done", "skipped")
+    ]
+    if incomplete:
+        # Don't finish: keep the session running and tell it what's left. The build
+        # session must complete (or revise away) every step before reporting done.
+        return {
+            "ok": True,
+            "complete": False,
+            "message": (
+                "Not done yet — these steps are still incomplete: "
+                + ", ".join(incomplete)
+                + ". Finish them (complete_step) or revise the plan (revise_steps), "
+                "then call report_done again."
+            ),
+        }
     state = em.storage.set_done_summary(ap.root, ap.name, execution_id, body.summary)
     em.publish_progress(execution_id, "progress", state)
     em.stop(execution_id, "done")
-    return {"ok": True}
+    return {"ok": True, "complete": True}

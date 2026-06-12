@@ -44,33 +44,23 @@ async def _call(path: str, payload: dict) -> dict:
 
 
 @mcp.tool()
-async def plan_steps(steps: list[str]) -> str:
-    """Record your plan as an ordered list of step titles. Call this once after you
-    have read the task spec and understood the work, before you start coding."""
-    await _call("steps/plan", {"titles": steps})
-    return f"Recorded {len(steps)} steps."
+async def complete_step(title: str) -> str:
+    """Mark the step with this exact `title` as done. Call it the moment you finish a
+    step. The next step is automatically set to in-progress for you — you do not need
+    to start it manually. Work through the plan one step at a time, in order."""
+    await _call("steps/complete", {"title": title})
+    return f"Marked '{title}' done; the next step is now in progress."
 
 
 @mcp.tool()
-async def add_step(title: str, detail: str = "") -> str:
-    """Append a step you discovered mid-build that wasn't in your original plan."""
-    await _call("steps/add", {"title": title, "detail": detail})
-    return "Step added."
-
-
-@mcp.tool()
-async def update_step(
-    title: str = "", step_id: str = "", status: str = "", detail: str = ""
-) -> str:
-    """Update a step's status as you work. Identify it by `title` (or `step_id`).
-    `status` is one of: pending, in_progress, done, skipped. Mark a step
-    in_progress when you start it and done when you finish."""
-    await _call(
-        "steps/update",
-        {"title": title or None, "stepId": step_id or None,
-         "status": status or None, "detail": detail or None},
-    )
-    return "Step updated."
+async def revise_steps(steps: list[dict]) -> str:
+    """Revise the plan when steps need to be added, removed, reordered, or reworded.
+    Provide the ENTIRE updated list of steps (not just the changes), each as
+    `{"title": "...", "detail": "<optional>", "done": true|false}` — set `done` to true
+    for steps you've already completed so their state is preserved. The first not-done
+    step automatically becomes in-progress."""
+    await _call("steps/revise", {"steps": steps})
+    return f"Plan revised to {len(steps)} steps."
 
 
 @mcp.tool()
@@ -84,9 +74,17 @@ async def ask_question(question: str) -> str:
 
 @mcp.tool()
 async def report_done(summary: str) -> str:
-    """Call this when the task is fully implemented. Provide a short summary of what
-    you changed. Promptly will commit your work and move the task to review."""
-    await _call("report-done", {"summary": summary})
+    """Call this when the task is fully implemented AND every step is marked done.
+    Provide a short summary of what you changed. If any steps are still incomplete this
+    call is rejected and tells you which remain — finish or revise them first. On
+    success Promptly commits your work and moves the task to review."""
+    result = await _call("report-done", {"summary": summary})
+    if not result.get("complete", True):
+        return result.get(
+            "message",
+            "Cannot finish: some steps are still incomplete. Complete or revise them, "
+            "then call report_done again.",
+        )
     return "Reported done. Promptly will commit and move the task to review."
 
 

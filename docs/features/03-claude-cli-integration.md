@@ -135,14 +135,15 @@ So Claude updates execution state through **typed tools** instead of editing
 `progress.json` directly (safer; can't corrupt the file or touch other tasks). Ship a small
 **stdio MCP server** (Python, same package) registered via `--mcp-config`.
 
-Tools exposed (namespace `promptly`):
+The step list is **pre-planned** in a separate MCP-free call before the build session starts
+(07), so the build session doesn't declare its own plan — it works the given list. Tools
+exposed (namespace `promptly`):
 | Tool | Purpose |
 |------|---------|
-| `plan_steps(steps: [{title, detail}])` | Claude declares its plan; replaces/sets `steps`. |
-| `update_step(id, status, detail?)` | Mark a step in_progress/done/skipped. |
-| `add_step(title, detail?)` | Append a step discovered mid-flight. |
+| `complete_step(title)` | Mark the named step `done`; the next pending step auto-advances to `in_progress`. |
+| `revise_steps(steps: [{title, detail?, done}])` | Replace the **entire** plan when steps must change; re-derives the active step. |
 | `ask_question(question) -> id` | Surface a clarifying question; execution enters `awaiting_input`. |
-| `report_done(summary)` | Signal task complete → status `in_review`. |
+| `report_done(summary)` | Signal task complete → status `in_review`. **Rejected if any step is still incomplete.** |
 
 > **Permission approvals are NOT an MCP tool.** This CLI has no `--permission-prompt-tool`.
 > Out-of-scope execution actions are caught by a **`PreToolUse` hook** (09) that records a

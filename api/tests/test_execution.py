@@ -99,12 +99,31 @@ def test_internal_steps_and_question(storage, root, engine, monkeypatch):
     storage.create_project("Demo", root)
     storage.create_execution(root, "Demo", "e1", "t1")
 
-    # plan + update steps
-    s = storage.plan_steps(root, "Demo", "e1", ["read spec", "write code"])
+    # seed steps: first is auto in_progress, rest pending
+    s = storage.seed_steps(
+        root, "Demo", "e1",
+        [{"title": "read spec"}, {"title": "write code"}],
+    )
     assert [st.title for st in s.steps] == ["read spec", "write code"]
-    s = storage.update_step(root, "Demo", "e1", title="read spec", status="done")
+    assert s.steps[0].status == "in_progress" and s.steps[0].started_at
+    assert s.steps[1].status == "pending"
+
+    # completing a step auto-advances the next to in_progress
+    s = storage.complete_step(root, "Demo", "e1", title="read spec")
+    assert s.steps[0].status == "done" and s.steps[0].finished_at
+    assert s.steps[1].status == "in_progress"
+
+    # revise: provide the whole list, marking which are done; first not-done -> active
+    s = storage.revise_steps(
+        root, "Demo", "e1",
+        [{"title": "read spec", "done": True},
+         {"title": "write code", "done": False},
+         {"title": "add tests", "done": False}],
+    )
+    assert [st.title for st in s.steps] == ["read spec", "write code", "add tests"]
     assert s.steps[0].status == "done"
-    assert s.steps[0].finished_at
+    assert s.steps[1].status == "in_progress"  # first not-done becomes active
+    assert s.steps[2].status == "pending"
 
     # a question flips status to awaiting_input and is recorded
     s, qobj = storage.add_question(root, "Demo", "e1", "Which DB?")
@@ -128,9 +147,46 @@ def test_internal_endpoints_require_token(storage, root):
     client = TestClient(app, raise_server_exceptions=False)
 
     # wrong token -> 403
-    r = client.post("/internal/executions/e2/steps/plan", params={"project": "Demo"},
-                    headers={"X-Promptly-Token": "nope"}, json={"titles": ["a"]})
+    r = client.post("/internal/executions/e2/steps/complete", params={"project": "Demo"},
+                    headers={"X-Promptly-Token": "nope"}, json={"title": "a"})
     assert r.status_code == 403
+
+
+def test_report_done_rejected_until_steps_complete(storage, root):
+    from fastapi.testclient import TestClient
+
+    from api.deps import get_internal_token, get_storage
+    from api.main import create_app
+
+    storage.create_project("Demo", root)
+    storage.create_execution(root, "Demo", "e7", "t7")
+    storage.seed_steps(root, "Demo", "e7",
+                       [{"title": "a"}, {"title": "b"}])
+
+    app = create_app()
+    app.dependency_overrides[get_storage] = lambda: storage
+    app.dependency_overrides[get_internal_token] = lambda: "tok"
+    client = TestClient(app, raise_server_exceptions=False)
+    hdr = {"X-Promptly-Token": "tok"}
+    q = {"project": "Demo"}
+
+    # steps incomplete -> report_done is rejected, nothing finalized
+    r = client.post("/internal/executions/e7/report-done", params=q,
+                    headers=hdr, json={"summary": "done"})
+    assert r.status_code == 200
+    assert r.json()["complete"] is False
+    assert "a" in r.json()["message"] and "b" in r.json()["message"]
+    assert not storage.read_progress(root, "Demo", "e7").done_summary
+
+    # finish both steps, then it succeeds
+    client.post("/internal/executions/e7/steps/complete", params=q,
+                headers=hdr, json={"title": "a"})
+    client.post("/internal/executions/e7/steps/complete", params=q,
+                headers=hdr, json={"title": "b"})
+    r = client.post("/internal/executions/e7/report-done", params=q,
+                    headers=hdr, json={"summary": "all done"})
+    assert r.json()["complete"] is True
+    assert storage.read_progress(root, "Demo", "e7").done_summary == "all done"
 
 
 # ── run loop finalize ────────────────────────────────────────────────────────────

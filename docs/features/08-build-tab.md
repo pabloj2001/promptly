@@ -37,8 +37,9 @@ the worktree + starts the run, task flips to `in_progress`, view switches to the
 **In progress** → live execution UI, driven by `useExecutionStream(executionId)` (SSE, 04):
 - Task metadata header (name, group, deps).
 - **Steps:** the `steps` array from `progress.json`, each with status
-  (pending/in_progress/done/skipped), updating live as MCP `update_step`/`add_step` events
-  arrive.
+  (pending/in_progress/done/skipped). The plan is seeded up front by the planning phase (07)
+  — shown as "Planning steps…" until it arrives — then updates live as MCP `complete_step` /
+  `revise_steps` events advance it.
 - **Clarifying questions (conversational):** questions surface and are answered **one at a
   time** like a chat (user feedback) — each `pendingQuestions` entry renders with an answer
   box → `POST /executions/{id}/answer` → resumes Claude (07), who may then ask the next. Not

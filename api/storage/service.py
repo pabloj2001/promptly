@@ -48,6 +48,31 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+def _find_step(
+    steps: list[Step], step_id: Optional[str], title: Optional[str]
+) -> Optional[Step]:
+    for st in steps:
+        if step_id and st.id == step_id:
+            return st
+    for st in steps:
+        if title and st.title == title:
+            return st
+    return None
+
+
+def _advance_active(steps: list[Step]) -> None:
+    """Ensure exactly one step is in_progress: if none is, promote the first step
+    that isn't done/skipped. Leaves an existing in_progress step alone."""
+    if any(st.status == StepStatus.in_progress.value for st in steps):
+        return
+    for st in steps:
+        if st.status not in (StepStatus.done.value, StepStatus.skipped.value):
+            st.status = StepStatus.in_progress.value
+            if not st.started_at:
+                st.started_at = _now()
+            return
+
+
 class StorageError(Exception):
     """Domain error raised by StorageService. Carries an HTTP status + code so
     the API can render a consistent ``{error:{code,message}}`` envelope (02)."""
@@ -603,52 +628,61 @@ class StorageService:
             s.done_summary = summary
         return self._mutate_progress(root, name, execution_id, fn)
 
-    def plan_steps(
-        self, root: str, name: str, execution_id: str, titles: list[str]
+    def seed_steps(
+        self, root: str, name: str, execution_id: str, steps: list[dict]
     ) -> ProgressState:
+        """Seed the step list from the planning phase (07): all pending except the
+        first, which is set in_progress. ``steps`` items are ``{title, detail?}``."""
         def fn(s: ProgressState) -> None:
             s.steps = [
-                Step(id=_new_id(), title=t, status=StepStatus.pending)
-                for t in titles
+                Step(id=_new_id(), title=st["title"], detail=st.get("detail", ""))
+                for st in steps if st.get("title")
             ]
+            _advance_active(s.steps)
         return self._mutate_progress(root, name, execution_id, fn)
 
-    def add_step(
-        self, root: str, name: str, execution_id: str, title: str, detail: str = ""
-    ) -> ProgressState:
-        def fn(s: ProgressState) -> None:
-            s.steps.append(Step(id=_new_id(), title=title, detail=detail))
-        return self._mutate_progress(root, name, execution_id, fn)
-
-    def update_step(
+    def complete_step(
         self, root: str, name: str, execution_id: str, *,
         step_id: Optional[str] = None, title: Optional[str] = None,
-        status: Optional[StepStatus | str] = None, detail: Optional[str] = None,
     ) -> ProgressState:
-        """Update a step by id or (failing that) by matching title."""
-        status_val = status.value if isinstance(status, StepStatus) else status
-
+        """Mark a step done (by id or title) and auto-advance the next pending step
+        to in_progress (07)."""
         def fn(s: ProgressState) -> None:
-            match = None
-            for st in s.steps:
-                if step_id and st.id == step_id:
-                    match = st
-                    break
-                if title and st.title == title:
-                    match = st
-            if match is None and title:  # unknown title -> treat as new step
-                match = Step(id=_new_id(), title=title)
-                s.steps.append(match)
-            if match is None:
-                return
-            if status_val is not None:
-                match.status = status_val
-                if status_val == StepStatus.in_progress.value and not match.started_at:
-                    match.started_at = _now()
-                if status_val in (StepStatus.done.value, StepStatus.skipped.value):
-                    match.finished_at = _now()
-            if detail is not None:
-                match.detail = detail
+            match = _find_step(s.steps, step_id, title)
+            if match is not None:
+                match.status = StepStatus.done.value
+                match.finished_at = _now()
+            _advance_active(s.steps)
+        return self._mutate_progress(root, name, execution_id, fn)
+
+    def revise_steps(
+        self, root: str, name: str, execution_id: str, steps: list[dict]
+    ) -> ProgressState:
+        """Replace the entire step list (07). Each item is
+        ``{title, detail?, done?}``; existing steps are matched by title to preserve
+        their ids/timestamps. The first not-done step is set in_progress."""
+        def fn(s: ProgressState) -> None:
+            prev = {st.title: st for st in s.steps}
+            rebuilt: list[Step] = []
+            for item in steps:
+                title = item.get("title")
+                if not title:
+                    continue
+                old = prev.get(title)
+                done = bool(item.get("done"))
+                rebuilt.append(Step(
+                    id=old.id if old else _new_id(),
+                    title=title,
+                    detail=item.get("detail", old.detail if old else ""),
+                    status=StepStatus.done.value if done else StepStatus.pending.value,
+                    started_at=old.started_at if old else None,
+                    finished_at=(
+                        (old.finished_at if old and old.finished_at else _now())
+                        if done else None
+                    ),
+                ))
+            s.steps = rebuilt
+            _advance_active(s.steps)
         return self._mutate_progress(root, name, execution_id, fn)
 
     def add_question(

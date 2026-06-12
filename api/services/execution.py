@@ -118,12 +118,41 @@ class ExecutionManager:
         deps = [self.storage.get_entry(root, project, "tasks", d).name
                 for d in task.depends_on
                 if (self.storage.read_metadata(root, project, "tasks").get(d))]
-        prompt = self.claude.render_execute_prompt(
-            root, project, task_name=task.name, task_file=task.file,
-            worktree=wt, dependency_names=deps,
-        )
-        self._spawn(self._run(root, project, execution_id, task_id, prompt))
+        # Plan first (separate MCP-free call), then run the build session. Done in a
+        # spawned task so start() returns immediately; steps stream in over SSE.
+        self._spawn(self._plan_then_run(
+            root, project, execution_id, task_id, task.name, task.file, wt, deps))
         return self.storage.read_progress(root, project, execution_id)
+
+    async def _plan_then_run(
+        self, root: str, project: str, execution_id: str, task_id: str,
+        task_name: str, task_file: str, worktree_dir: str, deps: list[str],
+    ) -> None:
+        """Phase 1: ask Claude to break the task into steps and seed them (first
+        in_progress). Phase 2: run the build session with the plan inlined."""
+        try:
+            stubs = await self.claude.plan_execution_steps(
+                root=root, project=project, task_name=task_name,
+                task_file=task_file, dependency_names=deps,
+            )
+        except Exception as exc:  # planning failed -> mark the execution failed
+            state = self.storage.set_execution_status(
+                root, project, execution_id, ProgressStatus.failed,
+                error=f"planning failed: {exc}")
+            self.publish_progress(execution_id, "status", state)
+            return
+
+        state = self.storage.seed_steps(
+            root, project, execution_id,
+            [{"title": s.title, "detail": s.detail} for s in stubs],
+        )
+        self.publish_progress(execution_id, "steps", state)
+
+        prompt = self.claude.render_execute_prompt(
+            root, project, task_name=task_name, task_file=task_file,
+            worktree=worktree_dir, dependency_names=deps, steps=state.steps,
+        )
+        await self._run(root, project, execution_id, task_id, prompt)
 
     # ── Run loop ─────────────────────────────────────────────────────────────────
 

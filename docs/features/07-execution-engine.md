@@ -50,8 +50,18 @@ tracks the run loop.
 5. Write initial `progress.json` (`status: running`, `branch`, `baseSha`, `sessionId: null`).
 6. Link both ways: set `task.executionId = id` and `task.status = in_progress`;
    `progress.taskId = id`.
-7. Kick off the **run loop** (background task) and return `executionId` immediately so the
+7. Kick off the **plan-then-run** background task and return `executionId` immediately so the
    UI can subscribe to the stream.
+
+## Planning phase (before the build session)
+Execution is **two AI calls**. First a short, **MCP-free generation call**
+(`ClaudeService.plan_execution_steps`, `plan_steps.md.j2`, generation profile = repo-wide
+reads, no writes) breaks the task into an ordered list of concrete steps ("research X",
+"implement Y", "add tests", "run the suite"). These are seeded into `progress.steps`
+(`storage.seed_steps`) **all incomplete except the first, which is set `in_progress`**, and a
+`steps` SSE event is emitted so the UI shows the plan immediately. The build session that
+follows is given this plan inlined in its prompt — it does **not** re-plan. (If planning
+fails, the execution is marked `failed` before any worktree session starts.)
 
 ## The run loop
 ExecutionManager spawns a `claude -p` build session built by
@@ -62,19 +72,26 @@ registered, all bound to this `executionId` via env. ExecutionManager owns the s
 (in a registry) so it can kill it; it drains `stream-json` only to capture the `session_id`
 from the init event (progress itself comes from the MCP tools, not text parsing).
 - **Prompt:** rendered from `execute_task.md.j2` (09). The **task spec is inlined** (Claude
-  must have it verbatim); the project spec, sibling specs, `CLAUDE.md`, and source are read by
-  path **from the worktree's own checkout** (reads are confined to the worktree — see
-  Permissions). Claude plans via `plan_steps`, keeps steps updated via `update_step`/`add_step`,
-  asks via `ask_question` when blocked, and calls `report_done` when finished. It may only
+  must have it verbatim) **along with the pre-planned step list**; the project spec, sibling
+  specs, `CLAUDE.md`, and source are read by path **from the worktree's own checkout** (reads
+  are confined to the worktree — see Permissions). Claude works the plan one step at a time:
+  as it finishes each it calls `complete_step(title)` — which marks that step `done` and
+  **auto-advances the next pending step to `in_progress`** — and if the plan needs to change it
+  calls `revise_steps` with the **entire** updated list (each `{title, detail?, done}`), which
+  rebuilds the list (preserving ids/timestamps by title) and re-derives the active step. It
+  asks via `ask_question` when blocked and calls `report_done` when finished. It may only
   **write** inside the worktree.
 - **Progress writes come from the MCP tools**, not from parsing model text: each tool call
   mutates this execution's `progress.json` (via StorageService, locked atomic write) and
   publishes an event to the SSE bus. This is why MCP is preferred over Claude editing JSON.
 - **Session id:** capture from the `stream-json` init event and persist to `progress.json`
   as soon as known (enables every later `--resume`).
-- **Completion:** `report_done` records `doneSummary` and stops the process; on exit the run
-  loop **commits the worktree changes once** with a generated message (single commit per
-  `report_done`; subsequent feedback rounds add their own commit), sets
+- **Completion:** `report_done` is **guarded** — the internal endpoint first checks every step
+  is `done`/`skipped`; if any remain it is **rejected** (returns `complete:false` + the list of
+  remaining steps to the model, the process keeps running) so the session must finish or revise
+  the plan before it can end. Once all steps are complete it records `doneSummary` and stops the
+  process; on exit the run loop **commits the worktree changes once** with a generated message
+  (single commit per `report_done`; subsequent feedback rounds add their own commit), sets
   `progress.status = completed`, task `status = in_review`, emits `status` SSE.
 - **Failure:** non-zero exit / crash (with no recorded pause) → `progress.status = failed`,
   surface stderr; the user can retry/feedback.
