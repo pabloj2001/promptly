@@ -8,20 +8,25 @@ export function StatusNode({ data, selected }: NodeProps) {
   const d = data as { name: string; status?: TaskStatus | null; dimmed?: boolean };
   const meta = d.status ? STATUS_META[d.status] : null;
   const surface = meta?.surface ?? "bg-white border-slate-300";
+  const running = d.status === "in_progress";
   return (
-    <div
-      className={`rounded-md border px-3 py-2 shadow-sm transition-opacity ${surface} ${
-        selected ? "!border-blue-500 ring-2 ring-blue-300" : ""
-      } ${d.dimmed ? "opacity-30" : "opacity-100"}`}
-      style={{ width: 180 }}
-    >
-      <Handle type="target" position={Position.Left} className="!bg-slate-400" />
-      <div className="flex items-center gap-2">
-        {meta && <span className={`h-2 w-2 shrink-0 rounded-full ${meta.dot}`} />}
-        <span className="truncate text-sm font-medium text-slate-800">{d.name}</span>
+    <div className="relative" style={{ width: 180 }}>
+      {running && (
+        <span className="pointer-events-none absolute -inset-0.5 animate-pulse rounded-lg ring-2 ring-blue-400" />
+      )}
+      <div
+        className={`rounded-md border px-3 py-2 shadow-sm transition-opacity ${surface} ${
+          selected ? "!border-blue-500 ring-2 ring-blue-300" : ""
+        } ${d.dimmed ? "opacity-30" : "opacity-100"}`}
+      >
+        <Handle type="target" position={Position.Left} className="!bg-slate-400" />
+        <div className="flex items-center gap-2">
+          {meta && <span className={`h-2 w-2 shrink-0 rounded-full ${meta.dot}`} />}
+          <span className="truncate text-sm font-medium text-slate-800">{d.name}</span>
+        </div>
+        {meta && <div className="mt-0.5 text-xs text-slate-400">{meta.label}</div>}
+        <Handle type="source" position={Position.Right} className="!bg-slate-400" />
       </div>
-      {meta && <div className="mt-0.5 text-xs text-slate-400">{meta.label}</div>}
-      <Handle type="source" position={Position.Right} className="!bg-slate-400" />
     </div>
   );
 }
