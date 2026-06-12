@@ -95,14 +95,25 @@ export function LiveEditor({
     }
   }, [value]);
 
-  // Click outside the editor → render everything.
+  // Click outside the editor → render everything. This must listen in the CAPTURE
+  // phase: with a bubble-phase listener, React's delegated mousedown handler runs
+  // first and (mousedown being a discrete event) synchronously swaps the clicked
+  // block's <div> for a <textarea> and flushes this effect, attaching the document
+  // listener while the same mousedown is still propagating. The event then reaches
+  // document with an e.target that was just removed from the DOM, so contains()
+  // returns false and active is reset to null in the same dispatch — making clicks
+  // appear to do nothing. Capture runs before React mutates anything (and a listener
+  // attached mid-dispatch never sees the in-flight event's already-finished capture
+  // phase), so the check sees the DOM as it was when the user clicked.
   useEffect(() => {
     if (active === null) return;
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setActive(null);
+      const target = e.target as Node;
+      if (!target.isConnected) return; // removed mid-dispatch by a React commit
+      if (rootRef.current && !rootRef.current.contains(target)) setActive(null);
     };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
   }, [active]);
 
   // Focus the active block's textarea once it mounts (autoFocus alone can be lost to
