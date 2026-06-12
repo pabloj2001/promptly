@@ -48,7 +48,7 @@ export function DesignTab() {
   return (
     <div className="flex h-full min-h-0">
       <Sidebar selected={selected} selectedId={selectedId} onSelect={select} />
-      <div className="min-h-0 flex-1">
+      <div className="min-h-0 min-w-0 flex-1">
         {selected ? (
           <DocView key={selected.id} entry={selected} />
         ) : (
