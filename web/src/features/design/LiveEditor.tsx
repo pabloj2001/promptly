@@ -116,11 +116,18 @@ export function LiveEditor({
     return () => document.removeEventListener("mousedown", onDown, true);
   }, [active]);
 
+  // Grow a textarea to fit its content so it never scrolls.
+  const autosize = (el: HTMLTextAreaElement) => {
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  };
+
   // Focus the active block's textarea once it mounts (autoFocus alone can be lost to
   // the browser's default mousedown focus handling when swapping a div for a textarea).
   useEffect(() => {
     const ta = taRef.current;
     if (active !== null && ta) {
+      autosize(ta);
       ta.focus();
       const len = ta.value.length;
       ta.setSelectionRange(len, len);
@@ -156,16 +163,23 @@ export function LiveEditor({
       {blocks.map((b, i) => {
         if (b.kind === "gap") return <div key={i} className="h-3" />;
         if (i === active) {
-          const rows = Math.max(1, b.src.replace(/\n$/, "").split("\n").length);
+          // The block's src keeps the trailing newline(s) that separate it from the
+          // next block; hide them in the textarea and re-append on change so the body
+          // reassembles exactly and offsets stay correct.
+          const suffix = b.src.match(/\n*$/)?.[0] ?? "";
+          const display = b.src.slice(0, b.src.length - suffix.length);
           return (
             <textarea
               key={i}
               ref={taRef}
               autoFocus
-              rows={rows}
-              className="w-full resize-none rounded border border-blue-300 bg-blue-50/30 p-2 font-mono text-sm leading-relaxed focus:border-blue-500 focus:outline-none"
-              value={b.src}
-              onChange={(e) => editBlock(i, e.target.value)}
+              rows={1}
+              className="w-full resize-none overflow-hidden rounded border border-blue-300 bg-blue-50/30 p-2 font-mono text-sm leading-relaxed focus:border-blue-500 focus:outline-none"
+              value={display}
+              onChange={(e) => {
+                editBlock(i, e.target.value + suffix);
+                autosize(e.target);
+              }}
               onSelect={() => captureSel(i)}
               onMouseUp={() => captureSel(i)}
               onKeyUp={() => captureSel(i)}
