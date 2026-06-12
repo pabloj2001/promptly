@@ -83,6 +83,31 @@ export function useCreateDoc() {
   });
 }
 
+export function useImportDoc() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: ({ name, type, body }: { name: string; type: DocType; body: string }) =>
+      api.importDoc(name, type, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["docs", project] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+export function useGenerateTasksFromSpec() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: () => api.generateTasksFromSpec(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tasks", project] });
+      qc.invalidateQueries({ queryKey: ["taskGraph", project] });
+    },
+  });
+}
+
 export function useCreateTask() {
   const qc = useQueryClient();
   const project = useProject();

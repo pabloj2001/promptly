@@ -52,6 +52,12 @@ class CreateTaskRequest(CamelModel):
     task_group: Optional[str] = None
 
 
+class ImportDocRequest(CamelModel):
+    name: str
+    type: DocType = DocType.doc
+    body: str
+
+
 class DocOut(CamelModel):
     """Metadata + parsed body + parsed comments."""
 

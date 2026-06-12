@@ -62,6 +62,9 @@ task, publishing to the operations stream on completion.
 - `PUT  /docs/{id}/comments/{cid}` → edit/resolve a comment.
 - `POST /docs/{id}/address` → background revise to address unresolved comments; the
   completion event carries the proposed revision (frontend previews/accepts).
+- `POST /docs/import?project=` → **import an existing doc** `{ name, type, body }` (no AI):
+  writes the body verbatim and creates the metadata entry synchronously. Used by Design's
+  Import button / the empty-state "Import project spec" (05).
 - `DELETE /docs/{id}` → soft-remove.
 
 ### Tasks  (`type` = task)
@@ -73,6 +76,11 @@ plus:
   legal transitions where it matters (e.g. can't go `done` while an execution is running).
 - Task create (`POST /tasks`) takes `{ prompt, dependsOn?, taskGroup? }` and generates the
   task spec `.md` via Claude, same as docs.
+- `POST /tasks/generate-from-spec?project=` → **bulk-generate a task breakdown from the
+  project spec** (03). Requires a `project_spec`. The AI reads the spec + repo and returns a
+  list of task stubs (name, description, taskGroup, dependsOn-by-name); the server creates a
+  placeholder per task (resolving deps), starts each task's body generation in the background,
+  and returns the placeholders. Surfaced when a project has no tasks yet (05/06).
 
 ### Operations stream
 - `GET /operations/stream?project=` → **SSE** of doc/task operation events so the Design tab

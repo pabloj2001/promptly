@@ -23,7 +23,7 @@ from ..schemas import (
 from ..deps import get_claude, get_operations
 from ..services.claude import ClaudeService
 from ..services.operations import OperationManager
-from ..storage import ConflictError, StorageService
+from ..storage import ConflictError, StorageService, ValidationError
 from ._helpers import provisional_name
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -75,6 +75,52 @@ async def create_task(
         prompt=req.prompt, type=DocType.task, depends_on=req.depends_on, name_hint=req.name,
     )
     return entry
+
+
+@router.post("/generate-from-spec", response_model=list[MetadataEntry], status_code=202)
+async def generate_from_spec(
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+    claude: ClaudeService = Depends(get_claude),
+    ops: OperationManager = Depends(get_operations),
+):
+    """Break the project spec into tasks (03): plan -> create placeholders ->
+    resolve deps -> generate each body in the background. Returns placeholders."""
+    docs = storage.read_metadata(ap.root, ap.name, "docs")
+    if not any(d.type == DocType.project_spec.value for d in docs.values()):
+        raise ValidationError("no project spec to generate tasks from")
+
+    stubs = await claude.plan_tasks(root=ap.root, project=ap.name)
+
+    name_to_id: dict[str, str] = {}
+    placeholders = []
+    for stub in stubs:
+        ph = storage.create_placeholder(
+            ap.root, ap.name, type=DocType.task,
+            provisional_name=stub.name, task_group=stub.task_group,
+        )
+        name_to_id[stub.name] = ph.id
+        placeholders.append(ph)
+
+    # Resolve dependsOn (by name) and kick off each task's body generation.
+    for stub, ph in zip(stubs, placeholders):
+        deps = [
+            name_to_id[d] for d in stub.depends_on
+            if d in name_to_id and name_to_id[d] != ph.id
+        ]
+        if deps:
+            try:
+                storage.patch_metadata(ap.root, ap.name, COLLECTION, ph.id,
+                                       {"dependsOn": deps})
+            except ValidationError:
+                deps = []  # skip dep edges that would cycle
+        ops.start_generation(
+            ap.root, ap.name, ph.id, COLLECTION,
+            prompt=f"{stub.name}: {stub.description}",
+            type=DocType.task, depends_on=deps, name_hint=stub.name,
+        )
+
+    return placeholders
 
 
 @router.put("/{task_id}", response_model=MetadataEntry)

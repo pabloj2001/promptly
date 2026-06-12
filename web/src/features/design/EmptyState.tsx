@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { Spinner } from "../../components/Spinner";
 import { useCreateDoc } from "../../lib/queries";
+import { ImportDialog } from "./ImportDialog";
 
 // First doc = the project spec. Until it exists, Design shows this focused prompt.
 export function EmptyState({ onCreated }: { onCreated: (id: string) => void }) {
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
   const create = useCreateDoc();
 
   const submit = async () => {
@@ -39,14 +41,30 @@ export function EmptyState({ onCreated }: { onCreated: (id: string) => void }) {
         autoFocus
       />
       {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-      <button
-        className="mt-3 inline-flex items-center justify-center gap-2 self-start rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-        onClick={submit}
-        disabled={create.isPending || !prompt.trim()}
-      >
-        {create.isPending && <Spinner />}
-        {create.isPending ? "Generating…" : "Generate project spec"}
-      </button>
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          className="inline-flex items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          onClick={submit}
+          disabled={create.isPending || !prompt.trim()}
+        >
+          {create.isPending && <Spinner />}
+          {create.isPending ? "Generating…" : "Generate project spec"}
+        </button>
+        <span className="text-sm text-slate-400">or</span>
+        <button
+          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+          onClick={() => setImporting(true)}
+        >
+          Import project spec
+        </button>
+      </div>
+
+      <ImportDialog
+        open={importing}
+        onOpenChange={setImporting}
+        type="project_spec"
+        onImported={onCreated}
+      />
     </div>
   );
 }

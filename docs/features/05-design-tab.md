@@ -58,13 +58,22 @@ A doc/task carries an `operation` ({type, status} — 01) while AI is generating
   or `POST /tasks` → the API returns immediately with a placeholder entry (operation running)
   → it appears in the sidebar with a spinner and is selected → body/metadata fill in when the
   background operation completes (no blocking).
+- **`Import` button:** import an existing doc without AI — a dialog to **paste** Markdown or
+  **upload a `.md` file**, pick the type + name, and `POST /docs/import` writes it verbatim
+  (synchronous). Available anytime in Design; also offered for the **project spec** in the
+  empty state (below).
+- **`Generate tasks from spec` button:** shown in the tasks section **when the project has no
+  tasks yet** (and a `project_spec` exists). Calls `POST /tasks/generate-from-spec` (02/03):
+  the AI breaks the spec into tasks, which appear as placeholders (spinners) and fill in
+  asynchronously. The same action is offered in the Plan blank slate (06).
 
 ## Empty state (first doc = project spec)
 If the project has no `project_spec` yet, the main view shows a focused prompt: "Describe
 your project — what is it and what's it for?" Submitting calls `POST /docs` with
 `type=project_spec`; the backend frames it as the project-spec prompt and saves `project.md`
-(see [03](./03-claude-cli-integration.md)). Only after that does the normal `+ new` flow
-become available.
+(see [03](./03-claude-cli-integration.md)). The empty state also offers **Import project
+spec** (paste/upload an existing `project.md` via `POST /docs/import`) for users who already
+have one. Only after a spec exists does the normal create/import flow become available.
 
 ## Doc viewer / editor
 - Render markdown (`react-markdown`). The trailing `promptly:comments` block is parsed out by

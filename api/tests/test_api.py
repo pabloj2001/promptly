@@ -7,10 +7,18 @@ from api.services.claude import GeneratedDoc
 
 
 class FakeClaude:
-    """Used for the synchronous `/address` path (still calls claude directly)."""
+    """Used for the synchronous `/address` + `plan_tasks` paths (called directly)."""
 
     async def address_comments(self, *, root, project, body, comments):
         return body + "\n\n<!-- addressed -->"
+
+    async def plan_tasks(self, *, root, project):
+        from api.services.claude import TaskStub
+        return [
+            TaskStub(name="Set up DB", description="schema", task_group="Backend"),
+            TaskStub(name="Auth", description="login", task_group="Backend",
+                     depends_on=["Set up DB"]),
+        ]
 
 
 class FakeOperations:
@@ -114,6 +122,45 @@ def test_doc_chat(client, proj):
     roles = [m["role"] for m in hist["messages"]]
     assert roles == ["user", "assistant"]
     assert "ack: tighten it" in hist["messages"][1]["content"]
+
+
+def test_import_doc_verbatim(client, proj):
+    r = client.post("/docs/import", params=q(proj),
+                    json={"name": "Imported", "type": "doc", "body": "# Hi\nverbatim"})
+    assert r.status_code == 201, r.text
+    entry = r.json()
+    assert entry["file"] == "docs/imported.md"
+    got = client.get(f"/docs/{entry['id']}", params=q(proj)).json()
+    assert got["body"].strip() == "# Hi\nverbatim"
+    assert got["meta"]["operation"] is None  # no AI op
+
+
+def test_import_project_spec(client, proj):
+    r = client.post("/docs/import", params=q(proj),
+                    json={"name": "Spec", "type": "project_spec", "body": "# Spec"})
+    assert r.status_code == 201
+    assert client.get(f"/projects/{proj}").json()["hasProjectSpec"] is True
+
+
+def test_generate_tasks_from_spec(client, proj):
+    # needs a project spec first
+    r0 = client.post("/tasks/generate-from-spec", params=q(proj))
+    assert r0.status_code == 422  # no spec yet
+
+    client.post("/docs/import", params=q(proj),
+                json={"name": "Spec", "type": "project_spec", "body": "# Spec"})
+    r = client.post("/tasks/generate-from-spec", params=q(proj))
+    assert r.status_code == 202, r.text
+    placeholders = r.json()
+    assert {p["name"] for p in placeholders} == {"Set up DB", "Auth"}
+
+    tasks = client.get("/tasks", params=q(proj)).json()
+    by_name = {t["name"]: t for t in tasks}
+    # FakeOperations finalized bodies synchronously
+    assert by_name["Auth"]["operation"] is None
+    # dependency resolved by name -> id
+    db_id = by_name["Set up DB"]["id"]
+    assert by_name["Auth"]["dependsOn"] == [db_id]
 
 
 def test_permissions_config_defaults_and_update(client, proj):

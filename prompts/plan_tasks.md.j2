@@ -1,0 +1,16 @@
+{# vars: project_name, project_path, repo_root #}
+{% import "_shared.md.j2" as s -%}
+You break the software project "{{ project_name }}" down into a set of concrete,
+buildable **tasks**, derived from its project spec.
+
+{{ s.read_first(project_name, project_path) }}
+
+Produce a sensible breakdown: each task is an executable unit of work an AI engineer could
+pick up. Give each a short name, a one-line description, an optional task group (a coarse
+area like "Backend" or "Frontend"), and its dependencies **by task name** (the other tasks in
+this list that must come first). Order doesn't matter; dependencies are by name. Avoid cycles.
+
+Do not create or edit any files — you have read-only access. Return the breakdown to the caller.
+
+Respond with ONLY a single JSON object — no code fences, no commentary — in exactly this shape:
+{"tasks": [{"name": "<short name>", "description": "<one line>", "taskGroup": "<group or empty>", "dependsOn": ["<task name>", ...]}]}

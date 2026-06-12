@@ -88,6 +88,12 @@ export const api = {
       scoped: true,
       body: { prompt, type, name, dependsOn },
     }),
+  importDoc: (name: string, type: DocType, body: string) =>
+    request<MetadataEntry>("/docs/import", {
+      method: "POST",
+      scoped: true,
+      body: { name, type, body },
+    }),
   saveDoc: (id: string, body: string) =>
     request<MetadataEntry>(`/docs/${id}`, { method: "PUT", scoped: true, body: { body } }),
   addDocComment: (id: string, anchor: Comment["anchor"], body: string, kind = "comment") =>
@@ -108,6 +114,11 @@ export const api = {
       method: "POST",
       scoped: true,
       body: { prompt, name, dependsOn, taskGroup },
+    }),
+  generateTasksFromSpec: () =>
+    request<MetadataEntry[]>("/tasks/generate-from-spec", {
+      method: "POST",
+      scoped: true,
     }),
   setTaskStatus: (id: string, status: TaskStatus) =>
     request<MetadataEntry>(`/tasks/${id}/status`, {

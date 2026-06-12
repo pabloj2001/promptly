@@ -56,6 +56,13 @@ Plus:
 - **Open in Design** → routes to Design with this task's doc open (04 cross-tab action).
 - **Execute** → routes to Build for this task (starts/opens its execution; see 08).
 
+## Blank slate (no tasks yet)
+When the project has no tasks, both views show an empty state with two actions: the floating
+**+** (add one task by prompt) and **Generate tasks from spec** → `POST /tasks/generate-from-spec`
+(02/03), which breaks the project spec into a set of tasks (they appear as placeholders and
+fill in asynchronously). The latter is disabled until a `project_spec` exists. The same
+button lives in the Design tasks section (05).
+
 ## Add a task (both views)
 A hover/floating **+** button opens `PromptDialog` (04): prompt for what the task should be
 + optional dependency picker (preselect a task if one is selected). Submit → `POST /tasks`

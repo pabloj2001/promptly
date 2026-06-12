@@ -170,3 +170,20 @@ async def test_real_cli_generation(svc, project):
         type=DocType.doc,
     )
     assert gen.body and gen.name
+
+
+@pytest.mark.skipif(
+    os.environ.get("PROMPTLY_CLI_TEST") != "1",
+    reason="set PROMPTLY_CLI_TEST=1 to run the real Claude CLI smoke test",
+)
+@pytest.mark.asyncio
+async def test_real_cli_plan_tasks(svc, storage, project):
+    name, root = project
+    storage.create_entry(
+        root, name, type=DocType.project_spec, display_name="Spec",
+        body="# Todo App\nA CLI todo app with add, list, complete, and delete "
+             "commands, storing tasks in a JSON file.",
+    )
+    stubs = await svc.plan_tasks(root=root, project=name)
+    assert len(stubs) >= 2
+    assert all(s.name for s in stubs)

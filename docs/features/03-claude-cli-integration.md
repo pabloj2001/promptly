@@ -112,6 +112,14 @@ loading state meanwhile (05).
   unresolved highlight comments; input = current body + unresolved comments (with quoted
   anchors). Returns a proposed revision for preview; on accept the body is replaced and
   addressed comments marked `resolved` (05).
+- **Plan tasks from the spec** (`plan_tasks` template). Reads the project spec + repo and
+  returns a **task breakdown** as a JSON list of stubs `{name, description, taskGroup,
+  dependsOn:[names]}`. The API creates a placeholder per stub (resolving `dependsOn` names →
+  ids) and then runs each task's body generation through the normal `generate_task` flow, so
+  the tasks appear immediately and fill in asynchronously (02/05/06).
+
+> **Import is not generation.** Importing a doc (paste/upload, 05) bypasses Claude entirely —
+> the API writes the provided body verbatim. No template, no CLI call.
 
 ## Mode B — stateful execution session
 Used by the Execution Engine ([07](./07-execution-engine.md)). The session:

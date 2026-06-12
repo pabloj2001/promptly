@@ -46,6 +46,13 @@ class ChatTurn(CamelModel):
     session_id: Optional[str] = None
 
 
+class TaskStub(CamelModel):
+    name: str
+    description: str = ""
+    task_group: Optional[str] = None
+    depends_on: list[str] = []  # by task name
+
+
 class GenResult(CamelModel):
     text: str
     session_id: Optional[str] = None
@@ -107,9 +114,8 @@ class ClaudeService:
             raise ClaudeError(f"claude CLI timed out after {self.timeout}s")
 
         if proc.returncode != 0:
-            raise ClaudeError(
-                f"claude CLI exited {proc.returncode}: {err.decode(errors='replace')[:2000]}"
-            )
+            detail = err.decode(errors="replace")[:2000] or out.decode(errors="replace")[:2000]
+            raise ClaudeError(f"claude CLI exited {proc.returncode}: {detail}")
         try:
             data = json.loads(out.decode())
         except json.JSONDecodeError as e:
@@ -229,6 +235,27 @@ class ClaudeService:
             revised_body=parsed.get("revisedBody") or None,
             session_id=result.session_id,
         )
+
+    async def plan_tasks(self, *, root: str, project: str) -> list[TaskStub]:
+        """Read the project spec + repo and return a task breakdown (stubs)."""
+        rendered = self.prompts.render(
+            "plan_tasks",
+            project_name=project,
+            project_path=self._project_path(root, project),
+            repo_root=root,
+        )
+        result = await self._invoke(rendered, **self._gen_cli_args(root, project))
+        parsed = _parse_structured(result.text, require="tasks")
+        items = (parsed or {}).get("tasks") if parsed else None
+        if not isinstance(items, list):
+            raise ClaudeError("could not parse task breakdown")
+        stubs: list[TaskStub] = []
+        for it in items:
+            if isinstance(it, dict) and it.get("name"):
+                stubs.append(TaskStub.model_validate(it))
+        if not stubs:
+            raise ClaudeError("task breakdown was empty")
+        return stubs
 
     async def address_comments(
         self,

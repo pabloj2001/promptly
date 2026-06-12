@@ -21,6 +21,7 @@ from ..schemas import (
     ChatRequest,
     CreateDocRequest,
     DocOut,
+    ImportDocRequest,
     SaveBodyRequest,
     UpdateCommentRequest,
 )
@@ -70,6 +71,19 @@ async def create_doc(
         prompt=req.prompt, type=req.type, depends_on=req.depends_on, name_hint=req.name,
     )
     return entry
+
+
+@router.post("/import", response_model=MetadataEntry, status_code=201)
+def import_doc(
+    req: ImportDocRequest,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+):
+    """Import an existing doc verbatim (no AI). Writes the body and metadata
+    synchronously."""
+    return storage.create_entry(
+        ap.root, ap.name, type=req.type, display_name=req.name, body=req.body,
+    )
 
 
 @router.put("/{doc_id}", response_model=MetadataEntry)

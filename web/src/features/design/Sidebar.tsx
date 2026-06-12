@@ -2,9 +2,11 @@ import { useState } from "react";
 import { PromptDialog, type PromptResult } from "../../components/PromptDialog";
 import { Spinner } from "../../components/Spinner";
 import { StatusBadge } from "../../components/StatusBadge";
+import { GenerateTasksButton } from "../../components/GenerateTasksButton";
 import { useCreateDoc, useCreateTask, useDocs, useTasks } from "../../lib/queries";
 import type { MetadataEntry } from "../../lib/types";
 import { EditableMetadata } from "./EditableMetadata";
+import { ImportDialog } from "./ImportDialog";
 
 type NewKind = "doc" | "task" | null;
 
@@ -21,6 +23,7 @@ export function Sidebar({
   const { data: tasks } = useTasks();
   const [showRemoved, setShowRemoved] = useState(false);
   const [newKind, setNewKind] = useState<NewKind>(null);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const createDoc = useCreateDoc();
   const createTask = useCreateTask();
@@ -108,7 +111,10 @@ export function Sidebar({
         </div>
         <div className="space-y-0.5">
           {visibleTasks.length === 0 && (
-            <div className="px-2 text-xs text-slate-400">No tasks yet</div>
+            <div className="space-y-2 px-2 py-1">
+              <div className="text-xs text-slate-400">No tasks yet</div>
+              <GenerateTasksButton />
+            </div>
           )}
           {visibleTasks.map((t) => (
             <Row key={t.id} entry={t} />
@@ -138,7 +144,20 @@ export function Sidebar({
         >
           + Task
         </button>
+        <button
+          className="flex-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+          onClick={() => setImporting(true)}
+        >
+          Import
+        </button>
       </div>
+
+      <ImportDialog
+        open={importing}
+        onOpenChange={setImporting}
+        type="doc"
+        onImported={onSelect}
+      />
 
       <PromptDialog
         open={newKind !== null}

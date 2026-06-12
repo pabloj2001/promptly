@@ -26,6 +26,7 @@ prompts/
 ├─ generate_doc.md.j2
 ├─ generate_task.md.j2
 ├─ generate_project_spec.md.j2     # first-time spec — different framing
+├─ plan_tasks.md.j2                # break the project spec into a task list
 ├─ chat_edit.md.j2                 # conversational doc change requests
 ├─ address_comments.md.j2          # batch-address highlight comments
 └─ execute_task.md.j2              # execution session system prompt (07)

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { PromptDialog, type PromptResult } from "../../components/PromptDialog";
 import { Spinner } from "../../components/Spinner";
+import { GenerateTasksButton } from "../../components/GenerateTasksButton";
 import { useCreateTask, useTasks, useTaskGraph } from "../../lib/queries";
 import { useOperationsStream } from "../../lib/sse";
 import { useUiStore } from "../../store";
@@ -47,8 +48,10 @@ export function PlanTab() {
             <Spinner />
           </div>
         ) : graph.nodes.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-slate-400">
-            No tasks yet. Add one with the + button.
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-slate-400">
+            <div>No tasks yet.</div>
+            <GenerateTasksButton />
+            <div className="text-xs">…or add one with the + button.</div>
           </div>
         ) : planView === "graph" ? (
           <GraphView graph={graph} onSelect={setSelectedTaskId} />
