@@ -131,15 +131,18 @@ export function layoutGraph(graph: DependencyGraph): { nodes: Node[]; edges: Edg
           y: b.y + GROUP_HEADER + GROUP_PAD + pl.y,
         },
         data: { name: gn.name, status: gn.status } as StatusNodeData,
-        zIndex: 1,
+        zIndex: 2,
       });
     }
   }
 
+  // Render order: group background (0) < task edges (1) < task nodes (2), so
+  // cross-group edges draw over the group containers but under the task cards.
   const edges: Edge[] = graph.edges.map((e) => ({
     id: `${e.source}->${e.target}`,
     source: e.source,
     target: e.target,
+    zIndex: 1,
   }));
 
   return { nodes, edges };
