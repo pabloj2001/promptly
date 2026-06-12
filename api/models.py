@@ -246,9 +246,12 @@ class PermissionsConfig(CamelModel):
     )
     execution: PermissionProfile = Field(
         default_factory=lambda: PermissionProfile(
-            permission_mode="acceptEdits",
-            allow=["Read", "Grep", "Glob", "Edit", "Write", "Bash(git *)", "Bash(npm *)"],
+            # "auto" runs unattended: full repo writes + bash, no approval prompts
+            # (verified the CLI executes bash headless under this mode). Per-command
+            # whitelist/blacklist will come later via the PreToolUse hook + allow/deny.
+            permission_mode="auto",
+            allow=["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
             deny=[],
-            ask_fallback=True,
+            ask_fallback=False,
         )
     )

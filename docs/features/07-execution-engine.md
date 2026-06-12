@@ -114,15 +114,23 @@ events. Survives reconnects because state is always in `progress.json`.
 ## Permissions model
 Driven by the per-project **execution** profile in `permissions.json`, compiled into Claude
 CLI `--settings`/`--permission-mode`/`--add-dir` ([09](./09-prompts-and-permissions.md)).
-Claude runs **unattended by default** but **writes/executes only within the worktree**, while
-it may **read the whole repo** for context.
+
+**Default: `auto` (unattended, full access).** Executions run in `auto` permission mode with
+`allow: [Read, Grep, Glob, Edit, Write, Bash]` — Claude gets full repo writes + bash with no
+approval prompts (verified: the CLI runs bash headless under `auto`). The worktree (`cwd`)
+still isolates all changes from the user's tree until a PR, and reads span the whole repo via
+`--add-dir <root>`. Progress is reported via the MCP tools; Claude does not edit docs/metadata.
+No PreToolUse hook is attached in `auto`/`bypassPermissions`.
+
+**Future: gated mode + whitelist/blacklist.** When the user configures per-command allow/deny
+lists, the profile switches to a gated mode (`acceptEdits`) and the PreToolUse approval hook
+below is re-enabled. The hook/approval machinery (kill-and-resume, `--allowedTools` on grant)
+is built and tested; it's simply not engaged while the default is `auto`.
+
 - **Read the repo:** reads need no approval; with `cwd = worktree/` plus `--add-dir <root>`
   Claude can consult the live project docs (spec, sibling tasks/docs) and the rest of the
-  codebase. It reports progress via the MCP tools (03); it does not edit docs/metadata.
-- **Write/exec scoped to the worktree:** the execution profile uses `permissionMode:
-  acceptEdits` (auto-accept edits in the working dir) plus deny rules for writes/exec outside
-  the worktree. The worktree isolates all changes from the user's tree until a PR.
-- **Flagged requests go back to the user — via a `PreToolUse` hook, not an MCP tool.** This
+  codebase.
+- **Flagged requests go back to the user — via a `PreToolUse` hook, not an MCP tool (gated mode only).** This
   CLI has **no `--permission-prompt-tool`** (verified, v2.1.175). Instead the settings we pass
   register a **`PreToolUse` hook** (09): it fires before Write/Edit/Bash calls and decides
   `allow` (in-worktree edits, allow-listed Bash commands) vs. **out of scope** (write/exec

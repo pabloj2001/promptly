@@ -96,11 +96,10 @@ declares two **profiles** (Promptly compiles each into the flags/settings for a 
     "deny": ["Edit", "Write", "Bash"]         // generation never modifies anything
   },
   "execution": {
-    "permissionMode": "acceptEdits",          // auto-accept edits within the worktree
-    "allow": ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git *)", "Bash(npm *)"],
+    "permissionMode": "auto",                 // unattended: full repo writes + bash
+    "allow": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
     "deny": [],
-    // Out-of-scope attempts are routed back to the user (see "Approvals" below)
-    "askFallback": true
+    "askFallback": false
   }
 }
 ```
@@ -108,12 +107,15 @@ declares two **profiles** (Promptly compiles each into the flags/settings for a 
 - **generation** (Mode A, 03): `cwd = repo root`, reads allowed across the whole repo, all
   writes denied. Claude reads `CLAUDE.md`/spec/tasks/source, returns the document; *we* write
   the file.
-- **execution** (Mode B, 07): `cwd = worktree`, reads allowed across the repo (so it can
-  consult the live docs and the rest of the codebase), writes/exec allowed but **scoped to
-  the worktree** via deny rules on paths outside it; out-of-scope attempts trigger an
-  approval request.
-- The user can edit this file to widen access (e.g. add an `allow` rule, list an
-  `additionalReadDir`). Promptly reads it per call; missing file → sensible defaults above.
+- **execution** (Mode B, 07): `cwd = worktree`, runs **unattended** in `auto` mode — full
+  write + bash access, no approval prompts (verified the CLI executes bash headless under
+  `auto`). The worktree (cwd) still isolates changes from the user's tree until a PR, and
+  reads span the whole repo via `--add-dir`. A future per-command **whitelist/blacklist** will
+  switch this to a gated mode (`acceptEdits`) and re-enable the PreToolUse approval hook +
+  allow/deny rules below.
+- The user can edit this file to tighten or widen access (e.g. switch to a gated mode, add
+  `allow`/`deny` rules, list an `additionalReadDir`). Promptly reads it per call; missing
+  file → sensible defaults above.
 
 ### Approvals (replacing the non-existent `--permission-prompt-tool`)
 The CLI version we target has **no `--permission-prompt-tool` flag**. The supported way to

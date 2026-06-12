@@ -204,40 +204,19 @@ class ClaudeService:
         """Compile a build-session ``claude -p`` invocation (07).
 
         Runs in the worktree with the *execution* permissions profile (09), the MCP
-        progress server + PreToolUse approval hook registered, and whole-repo read
-        access via ``--add-dir``. ``granted`` carries already-approved permission
-        requests so a resumed run pre-allows them (both to the CLI and the hook).
+        progress server registered, and whole-repo read access via ``--add-dir``.
+
+        In unattended modes (``auto`` / ``bypassPermissions``, the default) Claude
+        gets full write + bash access and no approval hook is attached. In gated
+        modes the PreToolUse approval hook is registered, and ``granted`` carries
+        already-approved permission requests so a resumed run pre-allows them (both
+        to the CLI and the hook). Per-command whitelist/blacklist will plug in here.
         """
         cfg = self.storage.read_permissions(root, project)
         cli = build_cli_permissions(cfg, "execution", repo_root=root)
         settings = json.loads(cli.settings_json)
         allow: list[str] = settings["permissions"]["allow"]
-
-        allowed_bash = _bash_patterns(allow)
-        allowed_paths: list[str] = []
-        extra_tools: list[str] = []
-        for g in granted or []:
-            if g.tool == "Bash":
-                cmd = str(g.request.get("command", "")).strip()
-                if cmd:
-                    allowed_bash.append(cmd)
-                    extra_tools.append(f"Bash({cmd})")
-            elif g.tool in _EDIT_TOOLS:
-                path = str(g.request.get("path", "")).strip()
-                if path:
-                    allowed_paths.append(os.path.realpath(path))
-                    extra_tools.append(f"{g.tool}({path})")
-        allow.extend(extra_tools)
-
-        # Register the PreToolUse approval hook (09). It runs in Promptly's venv and
-        # imports api.* via PYTHONPATH (set in env below).
-        hook_cmd = f"{_shquote(self.python)} -m api.hooks.pretooluse"
-        settings["hooks"] = {
-            "PreToolUse": [{
-                "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
-                "hooks": [{"type": "command", "command": hook_cmd, "timeout": 60}],
-            }]
-        }
+        unattended = cli.permission_mode in ("auto", "bypassPermissions")
 
         callback_env = {
             "PROMPTLY_API_URL": self.api_url,
@@ -245,6 +224,42 @@ class ClaudeService:
             "PROMPTLY_EXECUTION_ID": execution_id,
             "PROMPTLY_TOKEN": self.internal_token,
         }
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(_APP_ROOT),
+            **callback_env,
+        }
+
+        extra_tools: list[str] = []
+        if not unattended:
+            # Gated mode: register the PreToolUse approval hook + carry forward any
+            # permissions the user already granted on a previous (paused) run.
+            allowed_bash = _bash_patterns(allow)
+            allowed_paths: list[str] = []
+            for g in granted or []:
+                if g.tool == "Bash":
+                    cmd = str(g.request.get("command", "")).strip()
+                    if cmd:
+                        allowed_bash.append(cmd)
+                        extra_tools.append(f"Bash({cmd})")
+                elif g.tool in _EDIT_TOOLS:
+                    path = str(g.request.get("path", "")).strip()
+                    if path:
+                        allowed_paths.append(os.path.realpath(path))
+                        extra_tools.append(f"{g.tool}({path})")
+            allow.extend(extra_tools)
+
+            hook_cmd = f"{_shquote(self.python)} -m api.hooks.pretooluse"
+            settings["hooks"] = {
+                "PreToolUse": [{
+                    "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+                    "hooks": [{"type": "command", "command": hook_cmd, "timeout": 60}],
+                }]
+            }
+            env["PROMPTLY_WORKTREE"] = worktree
+            env["PROMPTLY_ALLOWED_BASH"] = json.dumps(allowed_bash)
+            env["PROMPTLY_ALLOWED_PATHS"] = json.dumps(allowed_paths)
+
         mcp_config = {
             "mcpServers": {
                 "promptly": {
@@ -253,15 +268,6 @@ class ClaudeService:
                     "env": {**callback_env, "PYTHONPATH": str(_APP_ROOT)},
                 }
             }
-        }
-
-        env = {
-            **os.environ,
-            "PYTHONPATH": str(_APP_ROOT),
-            **callback_env,
-            "PROMPTLY_WORKTREE": worktree,
-            "PROMPTLY_ALLOWED_BASH": json.dumps(allowed_bash),
-            "PROMPTLY_ALLOWED_PATHS": json.dumps(allowed_paths),
         }
 
         args = [

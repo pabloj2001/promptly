@@ -219,36 +219,59 @@ async def test_permission_allow_resumes_with_grant(storage, root, monkeypatch):
 # ── build_run_command shape (no CLI spawned) ─────────────────────────────────────
 
 
-def test_build_run_command_shape(storage, root):
-    from api.models import PermissionRequest
+def test_build_run_command_auto_mode_no_hook(storage, root):
+    """Default execution profile is 'auto': full access, no approval hook."""
     from api.services.claude import ClaudeService
 
     storage.create_project("Demo", root)
     claude = ClaudeService(storage, internal_token="secret-tok",
                            api_url="http://127.0.0.1:8000")
-    granted = [PermissionRequest(id="p1", tool="Bash",
-                                 request={"command": "make build"}, asked_at="now")]
     spec = claude.build_run_command(
         root, "Demo", execution_id="e9", worktree="/tmp/wt",
-        prompt="go", session_id="sess-Z", granted=granted,
+        prompt="go", session_id="sess-Z",
     )
     args = spec.args
     assert "--output-format" in args and "stream-json" in args
     assert "--strict-mcp-config" in args
     assert "--resume" in args and "sess-Z" in args
-    # granted tool flows to --allowedTools
-    assert "Bash(make build)" in args
+    assert "auto" in args  # --permission-mode auto
 
     settings = json.loads(args[args.index("--settings") + 1])
-    assert "PreToolUse" in settings["hooks"]
+    assert "hooks" not in settings  # unattended: no PreToolUse approval hook
+    assert "--allowedTools" not in args
     mcp = json.loads(args[args.index("--mcp-config") + 1])
     assert "promptly" in mcp["mcpServers"]
 
     assert spec.env["PROMPTLY_TOKEN"] == "secret-tok"
     assert spec.env["PROMPTLY_EXECUTION_ID"] == "e9"
     assert "PYTHONPATH" in spec.env
-    assert json.loads(spec.env["PROMPTLY_ALLOWED_BASH"])  # includes git/npm + grant
+
+
+def test_build_run_command_gated_mode_registers_hook(storage, root):
+    """A gated profile (e.g. acceptEdits) registers the hook + forwards grants."""
+    from api.models import PermissionRequest, PermissionsConfig, PermissionProfile
+    from api.services.claude import ClaudeService
+
+    storage.create_project("Demo", root)
+    cfg = PermissionsConfig()
+    cfg.execution = PermissionProfile(
+        permission_mode="acceptEdits",
+        allow=["Read", "Edit", "Write", "Bash(git *)", "Bash(npm *)"],
+    )
+    storage.write_permissions(root, "Demo", cfg)
+
+    claude = ClaudeService(storage, internal_token="t", api_url="http://127.0.0.1:8000")
+    granted = [PermissionRequest(id="p1", tool="Bash",
+                                 request={"command": "make build"}, asked_at="now")]
+    spec = claude.build_run_command(
+        root, "Demo", execution_id="e9", worktree="/tmp/wt", prompt="go", granted=granted,
+    )
+    args = spec.args
+    settings = json.loads(args[args.index("--settings") + 1])
+    assert "PreToolUse" in settings["hooks"]
+    assert "Bash(make build)" in args  # granted tool flows to --allowedTools
     assert "make build" in json.loads(spec.env["PROMPTLY_ALLOWED_BASH"])
+    assert spec.env["PROMPTLY_WORKTREE"] == "/tmp/wt"
 
 
 # ── PreToolUse hook decisions ────────────────────────────────────────────────────
