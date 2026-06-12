@@ -246,9 +246,13 @@ class PermissionsConfig(CamelModel):
     )
     execution: PermissionProfile = Field(
         default_factory=lambda: PermissionProfile(
-            # "auto" runs unattended: full repo writes + bash, no approval prompts
-            # (verified the CLI executes bash headless under this mode). Per-command
-            # whitelist/blacklist will come later via the PreToolUse hook + allow/deny.
+            # Auto mode (unattended, no prompts) WITH explicit scoping: reads limited
+            # to the project's docs/ + tasks/ (via --add-dir) plus the worktree
+            # (cwd); writes restricted to the worktree by the PreToolUse hook (hard
+            # deny outside — verified the hook's deny is honored under `auto`). Bash
+            # runs unattended in the worktree. Set ask_fallback=true to route
+            # out-of-scope writes to the user instead of denying; set permissionMode
+            # to "bypassPermissions" to drop the hook for fully unscoped access.
             permission_mode="auto",
             allow=["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
             deny=[],

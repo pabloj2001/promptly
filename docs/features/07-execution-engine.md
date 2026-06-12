@@ -115,22 +115,26 @@ events. Survives reconnects because state is always in `progress.json`.
 Driven by the per-project **execution** profile in `permissions.json`, compiled into Claude
 CLI `--settings`/`--permission-mode`/`--add-dir` ([09](./09-prompts-and-permissions.md)).
 
-**Default: `auto` (unattended, full access).** Executions run in `auto` permission mode with
-`allow: [Read, Grep, Glob, Edit, Write, Bash]` — Claude gets full repo writes + bash with no
-approval prompts (verified: the CLI runs bash headless under `auto`). The worktree (`cwd`)
-still isolates all changes from the user's tree until a PR, and reads span the whole repo via
-`--add-dir <root>`. Progress is reported via the MCP tools; Claude does not edit docs/metadata.
-No PreToolUse hook is attached in `auto`/`bypassPermissions`.
+**Default: `auto` mode (unattended) with explicit read/write scoping.** Executions run in
+`auto` permission mode — no approval prompts — but with explicit boundaries:
+- **Read scope:** the project's living `docs/` and `tasks/` dirs (via `--add-dir`) plus the
+  worktree (`cwd`). NOT the whole repo. The codebase Claude builds against is the worktree
+  checkout; the project spec is inlined into the prompt. Extra read dirs via
+  `additionalReadDirs`.
+- **Write scope:** the worktree only. The **PreToolUse hook** hard-denies edits whose path is
+  outside the worktree (verified: the hook's deny is honored even under `auto`). Bash runs
+  unattended in the worktree (`cwd`); it isn't path-gated (OS-level bash sandboxing is out of
+  scope), but `auto` mode's own write-sandbox + the worktree cwd keep it contained in practice.
+- The system prompt explains this layout to Claude: which paths are read-only references
+  (docs/tasks/spec) vs. its read+write sandbox (the worktree).
 
-**Future: gated mode + whitelist/blacklist.** When the user configures per-command allow/deny
-lists, the profile switches to a gated mode (`acceptEdits`) and the PreToolUse approval hook
-below is re-enabled. The hook/approval machinery (kill-and-resume, `--allowedTools` on grant)
-is built and tested; it's simply not engaged while the default is `auto`.
+**Modes.** `auto` (default) = unattended + hook-scoped. `default`/`acceptEdits` also keep the
+hook. Set `ask_fallback: true` to route out-of-scope writes to the user (kill-and-resume +
+`--allowedTools` on grant) instead of hard-denying. Only `bypassPermissions` drops the hook
+entirely (fully unscoped). A future per-command whitelist/blacklist plugs into the hook +
+allow/deny rules.
 
-- **Read the repo:** reads need no approval; with `cwd = worktree/` plus `--add-dir <root>`
-  Claude can consult the live project docs (spec, sibling tasks/docs) and the rest of the
-  codebase.
-- **Flagged requests go back to the user — via a `PreToolUse` hook, not an MCP tool (gated mode only).** This
+- **Flagged requests go back to the user — via a `PreToolUse` hook, not an MCP tool (ask_fallback only).** This
   CLI has **no `--permission-prompt-tool`** (verified, v2.1.175). Instead the settings we pass
   register a **`PreToolUse` hook** (09): it fires before Write/Edit/Bash calls and decides
   `allow` (in-worktree edits, allow-listed Bash commands) vs. **out of scope** (write/exec

@@ -121,6 +121,13 @@ def main() -> None:
         path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
         if _in_worktree(path, worktree) or _path_granted(path, worktree):
             _decision("allow", "Edit within the worktree sandbox (or user-approved).")
+        # Out of scope. "deny" = hard policy boundary; "ask" = route to the user.
+        if os.environ.get("PROMPTLY_HOOK_MODE", "ask") == "deny":
+            _decision(
+                "deny",
+                f"'{tool}' targets {path}, outside the worktree sandbox. Writes are "
+                "restricted to the worktree — edit files there instead.",
+            )
         _request_permission(tool, {"path": path, **_summary(tool_input)})
 
     if tool == "Bash":

@@ -96,10 +96,10 @@ declares two **profiles** (Promptly compiles each into the flags/settings for a 
     "deny": ["Edit", "Write", "Bash"]         // generation never modifies anything
   },
   "execution": {
-    "permissionMode": "auto",                 // unattended: full repo writes + bash
+    "permissionMode": "auto",                 // unattended (no prompts)
     "allow": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
     "deny": [],
-    "askFallback": false
+    "askFallback": false                      // hard-deny out-of-scope writes
   }
 }
 ```
@@ -107,15 +107,15 @@ declares two **profiles** (Promptly compiles each into the flags/settings for a 
 - **generation** (Mode A, 03): `cwd = repo root`, reads allowed across the whole repo, all
   writes denied. Claude reads `CLAUDE.md`/spec/tasks/source, returns the document; *we* write
   the file.
-- **execution** (Mode B, 07): `cwd = worktree`, runs **unattended** in `auto` mode — full
-  write + bash access, no approval prompts (verified the CLI executes bash headless under
-  `auto`). The worktree (cwd) still isolates changes from the user's tree until a PR, and
-  reads span the whole repo via `--add-dir`. A future per-command **whitelist/blacklist** will
-  switch this to a gated mode (`acceptEdits`) and re-enable the PreToolUse approval hook +
-  allow/deny rules below.
-- The user can edit this file to tighten or widen access (e.g. switch to a gated mode, add
-  `allow`/`deny` rules, list an `additionalReadDir`). Promptly reads it per call; missing
-  file → sensible defaults above.
+- **execution** (Mode B, 07): `cwd = worktree`, runs **unattended in `auto` mode** (no prompts)
+  but **explicitly scoped**: reads limited to the project's `docs/` + `tasks/` (`--add-dir`)
+  plus the worktree; writes limited to the worktree by the PreToolUse hook (hard-denies edits
+  outside it — verified honored under `auto`). Bash runs in the worktree. The worktree
+  isolates changes until a PR. `askFallback: true` routes out-of-scope writes to the user
+  instead of denying; `bypassPermissions` drops the hook for fully unscoped access. A future
+  per-command **whitelist/blacklist** plugs into the hook + allow/deny rules.
+- The user can edit this file to tighten or widen access (mode, `allow`/`deny`,
+  `additionalReadDirs`). Promptly reads it per call; missing file → sensible defaults above.
 
 ### Approvals (replacing the non-existent `--permission-prompt-tool`)
 The CLI version we target has **no `--permission-prompt-tool` flag**. The supported way to

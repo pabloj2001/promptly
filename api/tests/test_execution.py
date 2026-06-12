@@ -219,59 +219,83 @@ async def test_permission_allow_resumes_with_grant(storage, root, monkeypatch):
 # ── build_run_command shape (no CLI spawned) ─────────────────────────────────────
 
 
-def test_build_run_command_auto_mode_no_hook(storage, root):
-    """Default execution profile is 'auto': full access, no approval hook."""
+def test_build_run_command_scoped_default(storage, root):
+    """Default profile: auto mode (no prompts) WITH explicit scoping — reads limited
+    to docs/ + tasks/, writes gated to the worktree by the hook in hard-deny mode."""
     from api.services.claude import ClaudeService
+    from api.storage import paths
 
     storage.create_project("Demo", root)
     claude = ClaudeService(storage, internal_token="secret-tok",
                            api_url="http://127.0.0.1:8000")
     spec = claude.build_run_command(
-        root, "Demo", execution_id="e9", worktree="/tmp/wt",
-        prompt="go", session_id="sess-Z",
+        root, "Demo", execution_id="e9", worktree="/tmp/wt", prompt="go", session_id="sess-Z",
     )
     args = spec.args
-    assert "--output-format" in args and "stream-json" in args
-    assert "--strict-mcp-config" in args
+    assert "stream-json" in args and "--strict-mcp-config" in args
     assert "--resume" in args and "sess-Z" in args
-    assert "auto" in args  # --permission-mode auto
+    assert "auto" in args  # unattended, no prompts
+
+    # read scope = docs/ + tasks/ only (NOT the repo root)
+    add_dirs = [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
+    assert str(paths.docs_dir(root, "Demo")) in add_dirs
+    assert str(paths.tasks_dir(root, "Demo")) in add_dirs
+    assert root not in add_dirs
 
     settings = json.loads(args[args.index("--settings") + 1])
-    assert "hooks" not in settings  # unattended: no PreToolUse approval hook
-    assert "--allowedTools" not in args
-    mcp = json.loads(args[args.index("--mcp-config") + 1])
-    assert "promptly" in mcp["mcpServers"]
-
-    assert spec.env["PROMPTLY_TOKEN"] == "secret-tok"
-    assert spec.env["PROMPTLY_EXECUTION_ID"] == "e9"
-    assert "PYTHONPATH" in spec.env
+    assert settings["permissions"]["additionalDirectories"] == add_dirs
+    assert "PreToolUse" in settings["hooks"]  # write boundary even under auto
+    assert settings["hooks"]["PreToolUse"][0]["matcher"] == "Write|Edit|MultiEdit|NotebookEdit"
+    assert "Bash" in settings["permissions"]["allow"]  # bash runs unattended
+    assert spec.env["PROMPTLY_HOOK_MODE"] == "deny"
+    assert spec.env["PROMPTLY_WORKTREE"] == "/tmp/wt"
 
 
-def test_build_run_command_gated_mode_registers_hook(storage, root):
-    """A gated profile (e.g. acceptEdits) registers the hook + forwards grants."""
+def test_build_run_command_bypass_drops_hook(storage, root):
+    """permissionMode 'bypassPermissions' = fully unscoped, no hook."""
+    from api.models import PermissionsConfig, PermissionProfile
+    from api.services.claude import ClaudeService
+
+    storage.create_project("Demo", root)
+    cfg = PermissionsConfig()
+    cfg.execution = PermissionProfile(permission_mode="bypassPermissions",
+                                      allow=["Read", "Edit", "Write", "Bash"])
+    storage.write_permissions(root, "Demo", cfg)
+
+    claude = ClaudeService(storage, internal_token="t", api_url="http://127.0.0.1:8000")
+    spec = claude.build_run_command(
+        root, "Demo", execution_id="e9", worktree="/tmp/wt", prompt="go",
+    )
+    args = spec.args
+    assert "bypassPermissions" in args
+    settings = json.loads(args[args.index("--settings") + 1])
+    assert "hooks" not in settings
+    assert "PROMPTLY_HOOK_MODE" not in spec.env
+
+
+def test_build_run_command_ask_mode_forwards_grants(storage, root):
+    """ask_fallback profile: hook in ask mode, granted edit paths -> --allowedTools."""
     from api.models import PermissionRequest, PermissionsConfig, PermissionProfile
     from api.services.claude import ClaudeService
 
     storage.create_project("Demo", root)
     cfg = PermissionsConfig()
-    cfg.execution = PermissionProfile(
-        permission_mode="acceptEdits",
-        allow=["Read", "Edit", "Write", "Bash(git *)", "Bash(npm *)"],
-    )
+    cfg.execution = PermissionProfile(permission_mode="default",
+                                      allow=["Read", "Grep", "Glob", "Bash"],
+                                      ask_fallback=True)
     storage.write_permissions(root, "Demo", cfg)
 
     claude = ClaudeService(storage, internal_token="t", api_url="http://127.0.0.1:8000")
-    granted = [PermissionRequest(id="p1", tool="Bash",
-                                 request={"command": "make build"}, asked_at="now")]
+    granted = [PermissionRequest(id="p1", tool="Write",
+                                 request={"path": "/etc/thing"}, asked_at="now")]
     spec = claude.build_run_command(
         root, "Demo", execution_id="e9", worktree="/tmp/wt", prompt="go", granted=granted,
     )
     args = spec.args
-    settings = json.loads(args[args.index("--settings") + 1])
-    assert "PreToolUse" in settings["hooks"]
-    assert "Bash(make build)" in args  # granted tool flows to --allowedTools
-    assert "make build" in json.loads(spec.env["PROMPTLY_ALLOWED_BASH"])
-    assert spec.env["PROMPTLY_WORKTREE"] == "/tmp/wt"
+    assert "PreToolUse" in json.loads(args[args.index("--settings") + 1])["hooks"]
+    assert "Write(/etc/thing)" in args
+    assert spec.env["PROMPTLY_HOOK_MODE"] == "ask"
+    assert "/etc/thing" in json.loads(spec.env["PROMPTLY_ALLOWED_PATHS"])
 
 
 # ── PreToolUse hook decisions ────────────────────────────────────────────────────

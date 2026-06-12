@@ -180,14 +180,24 @@ class ClaudeService:
         self, root: str, project: str, *, task_name: str, task_file: str,
         worktree: str, dependency_names: list[str],
     ) -> str:
+        # Absolute, live locations so the prompt matches the scoped read dirs
+        # (docs/ + tasks/) — not the worktree's committed snapshot.
+        pdir = paths.project_dir(root, project)
+        task_file_abs = str(pdir / task_file)
+        spec_path = paths.project_spec_path(root, project)
+        project_spec = ""
+        if spec_path.exists():
+            project_spec = spec_path.read_text(encoding="utf-8")[:_BODY_BUDGET]
         return self.prompts.render(
             "execute_task",
             project_name=project,
-            project_path=self._project_path(root, project),
             task_name=task_name,
-            task_file=task_file,
+            task_file=task_file_abs,
+            docs_dir=str(paths.docs_dir(root, project)),
+            tasks_dir=str(paths.tasks_dir(root, project)),
             worktree=worktree,
             dependency_names=dependency_names,
+            project_spec=project_spec,
         )
 
     def build_run_command(
@@ -203,20 +213,30 @@ class ClaudeService:
     ) -> RunSpec:
         """Compile a build-session ``claude -p`` invocation (07).
 
-        Runs in the worktree with the *execution* permissions profile (09), the MCP
-        progress server registered, and whole-repo read access via ``--add-dir``.
-
-        In unattended modes (``auto`` / ``bypassPermissions``, the default) Claude
-        gets full write + bash access and no approval hook is attached. In gated
-        modes the PreToolUse approval hook is registered, and ``granted`` carries
-        already-approved permission requests so a resumed run pre-allows them (both
-        to the CLI and the hook). Per-command whitelist/blacklist will plug in here.
+        Read scope is explicit: the project's living ``docs/`` and ``tasks/`` dirs
+        (via ``--add-dir``) plus the worktree (cwd). Write scope is the worktree
+        only, enforced by the PreToolUse hook (hard deny outside, or — if the
+        profile sets ``ask_fallback`` — routed to the user). The hook's deny is
+        honored even under ``auto`` (the default), so auto runs unattended *and*
+        scoped. Only ``bypassPermissions`` drops the hook entirely (fully unscoped).
+        ``granted`` carries permissions already approved on a paused run so a
+        resumed run pre-allows them.
         """
         cfg = self.storage.read_permissions(root, project)
+        profile = cfg.execution
         cli = build_cli_permissions(cfg, "execution", repo_root=root)
         settings = json.loads(cli.settings_json)
         allow: list[str] = settings["permissions"]["allow"]
-        unattended = cli.permission_mode in ("auto", "bypassPermissions")
+        skip_hook = cli.permission_mode == "bypassPermissions"
+
+        # Explicit read scope: the project's living planning dirs (+ any user extras).
+        # The worktree is cwd, so it's read+write without being listed here.
+        read_dirs = [
+            str(paths.docs_dir(root, project)),
+            str(paths.tasks_dir(root, project)),
+            *cfg.additional_read_dirs,
+        ]
+        settings["permissions"]["additionalDirectories"] = read_dirs
 
         callback_env = {
             "PROMPTLY_API_URL": self.api_url,
@@ -231,34 +251,32 @@ class ClaudeService:
         }
 
         extra_tools: list[str] = []
-        if not unattended:
-            # Gated mode: register the PreToolUse approval hook + carry forward any
-            # permissions the user already granted on a previous (paused) run.
-            allowed_bash = _bash_patterns(allow)
-            allowed_paths: list[str] = []
-            for g in granted or []:
-                if g.tool == "Bash":
-                    cmd = str(g.request.get("command", "")).strip()
-                    if cmd:
-                        allowed_bash.append(cmd)
-                        extra_tools.append(f"Bash({cmd})")
-                elif g.tool in _EDIT_TOOLS:
-                    path = str(g.request.get("path", "")).strip()
-                    if path:
-                        allowed_paths.append(os.path.realpath(path))
-                        extra_tools.append(f"{g.tool}({path})")
-            allow.extend(extra_tools)
+        if not skip_hook:
+            # Write boundary: the PreToolUse hook gates the edit tools to the
+            # worktree. ask_fallback => route out-of-scope edits to the user (and
+            # carry forward already-granted paths); otherwise hard-deny them. Bash
+            # is intentionally not gated (runs in the worktree cwd).
+            hook_mode = "ask" if profile.ask_fallback else "deny"
+            if hook_mode == "ask":
+                allowed_paths: list[str] = []
+                for g in granted or []:
+                    if g.tool in _EDIT_TOOLS:
+                        path = str(g.request.get("path", "")).strip()
+                        if path:
+                            allowed_paths.append(os.path.realpath(path))
+                            extra_tools.append(f"{g.tool}({path})")
+                allow.extend(extra_tools)
+                env["PROMPTLY_ALLOWED_PATHS"] = json.dumps(allowed_paths)
 
             hook_cmd = f"{_shquote(self.python)} -m api.hooks.pretooluse"
             settings["hooks"] = {
                 "PreToolUse": [{
-                    "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+                    "matcher": "Write|Edit|MultiEdit|NotebookEdit",
                     "hooks": [{"type": "command", "command": hook_cmd, "timeout": 60}],
                 }]
             }
             env["PROMPTLY_WORKTREE"] = worktree
-            env["PROMPTLY_ALLOWED_BASH"] = json.dumps(allowed_bash)
-            env["PROMPTLY_ALLOWED_PATHS"] = json.dumps(allowed_paths)
+            env["PROMPTLY_HOOK_MODE"] = hook_mode
 
         mcp_config = {
             "mcpServers": {
@@ -279,7 +297,7 @@ class ClaudeService:
             "--mcp-config", json.dumps(mcp_config),
             "--strict-mcp-config",
         ]
-        for d in cli.add_dirs:
+        for d in read_dirs:
             args += ["--add-dir", d]
         if extra_tools:
             args += ["--allowedTools", *extra_tools]
