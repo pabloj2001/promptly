@@ -7,10 +7,11 @@ import type { TaskStatus } from "../../lib/types";
 export function StatusNode({ data, selected }: NodeProps) {
   const d = data as { name: string; status?: TaskStatus | null; dimmed?: boolean };
   const meta = d.status ? STATUS_META[d.status] : null;
+  const surface = meta?.surface ?? "bg-white border-slate-300";
   return (
     <div
-      className={`rounded-md border bg-white px-3 py-2 shadow-sm transition-opacity ${
-        selected ? "border-blue-500 ring-2 ring-blue-300" : "border-slate-300"
+      className={`rounded-md border px-3 py-2 shadow-sm transition-opacity ${surface} ${
+        selected ? "!border-blue-500 ring-2 ring-blue-300" : ""
       } ${d.dimmed ? "opacity-30" : "opacity-100"}`}
       style={{ width: 180 }}
     >
