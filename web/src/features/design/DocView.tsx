@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Modal } from "../../components/Modal";
@@ -13,6 +13,7 @@ import {
 import type { Comment, MetadataEntry } from "../../lib/types";
 import { collectionForType } from "./util";
 import { ChatPanel } from "./ChatPanel";
+import { LiveEditor } from "./LiveEditor";
 
 export function DocView({ entry }: { entry: MetadataEntry }) {
   const collection: Collection = collectionForType(entry.type);
@@ -27,7 +28,6 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
   const [chatInput, setChatInput] = useState("");
   const [sel, setSel] = useState<{ start: number; end: number } | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
-  const taRef = useRef<HTMLTextAreaElement>(null);
 
   const [addressing, setAddressing] = useState(false);
   const [preview, setPreview] = useState<{ body: string; ids: string[] } | null>(null);
@@ -64,14 +64,6 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
   const comments = data.comments;
   const unresolved = comments.filter((c) => !c.resolved && !c.orphaned);
   const orphaned = comments.filter((c) => c.orphaned);
-
-  const captureSelection = () => {
-    const ta = taRef.current;
-    if (!ta) return;
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    setSel(end > start ? { start, end } : null);
-  };
 
   const submitComment = () => {
     if (!sel || !commentDraft.trim()) return;
@@ -181,17 +173,10 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
           ) : (
             <div className="space-y-2">
               <p className="text-xs text-slate-500">
-                Select text, then add a comment or ask the AI (right panel).
+                Click a block to edit it in place; select text to comment or ask the AI
+                (right panel).
               </p>
-              <textarea
-                ref={taRef}
-                className="h-[60vh] w-full resize-none rounded-md border border-slate-300 p-3 font-mono text-sm focus:border-blue-500 focus:outline-none"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onSelect={captureSelection}
-                onMouseUp={captureSelection}
-                onKeyUp={captureSelection}
-              />
+              <LiveEditor value={draft} onChange={setDraft} onSelect={setSel} />
             </div>
           )}
         </div>

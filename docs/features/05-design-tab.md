@@ -82,10 +82,14 @@ have one. Only after a spec exists does the normal create/import flow become ava
 ## Doc viewer / editor
 - Render markdown (`react-markdown`). The trailing `promptly:comments` block is parsed out by
   the API and **never rendered as markdown** — comments come back as structured data.
-- **Manual edit** mode: a raw-markdown editor (textarea in v1; CodeMirror later) for
-  hand-tweaks; save via `PUT`. Editing offsets in the raw text map directly to comment anchors
-  (`{quote, start, end}`, [01](./01-data-model-and-storage.md)). Disabled while an operation
-  is in progress (loading states, above).
+- **Manual edit** mode — **Obsidian-style live preview** (`LiveEditor`): the doc stays
+  rendered as Markdown, and only the **block the cursor is in** turns into a raw-text box;
+  clicking another block renders the previous one and edits the new one, clicking outside
+  renders all. View mode stays pure rendered Markdown. The body is split into contiguous
+  blocks (blank-line runs + fenced code preserved) so offsets are exact: a selection inside a
+  block maps to global `{quote, start, end}` comment anchors
+  ([01](./01-data-model-and-storage.md)). Save via `PUT`. Disabled while an operation is in
+  progress (loading states, above).
 - **Highlighting:** selecting text offers **"Comment"** (an annotation) or **"Ask AI"**
   (sends the quoted span into the doc **Chat** for an immediate answer — see right panel).
   A comment computes the anchor and `POST /docs|tasks/{id}/comments`. Existing comments render
