@@ -259,3 +259,131 @@ export function useSetTaskStatus() {
     },
   });
 }
+
+// ── Build tab: executions ─────────────────────────────────────────────────────
+
+export function useExecution(executionId: string | null) {
+  const project = useProject();
+  return useQuery({
+    queryKey: ["execution", project, executionId],
+    queryFn: () => api.getProgress(executionId!),
+    enabled: !!project && !!executionId,
+  });
+}
+
+// Mutations that change a run's progress: cache the returned ProgressState and
+// refresh the task lists (task status flips with the run: in_progress/in_review).
+function useExecutionMutation<V>(
+  fn: (v: V) => Promise<import("./types").ProgressState>,
+) {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (state) => {
+      qc.setQueryData(["execution", project, state.executionId], state);
+      qc.invalidateQueries({ queryKey: ["tasks", project] });
+      qc.invalidateQueries({ queryKey: ["taskGraph", project] });
+    },
+  });
+}
+
+export function useStartExecution() {
+  return useExecutionMutation(({ taskId }: { taskId: string }) =>
+    api.startExecution(taskId),
+  );
+}
+
+export function useAnswerQuestion() {
+  return useExecutionMutation(
+    ({ id, questionId, answer }: { id: string; questionId: string; answer: string }) =>
+      api.answerQuestion(id, questionId, answer),
+  );
+}
+
+export function useDecidePermission() {
+  return useExecutionMutation(
+    ({ id, requestId, decision }: { id: string; requestId: string; decision: "allow" | "deny" }) =>
+      api.decidePermission(id, requestId, decision),
+  );
+}
+
+export function useSendFeedback() {
+  return useExecutionMutation(({ id, message }: { id: string; message: string }) =>
+    api.sendFeedback(id, message),
+  );
+}
+
+export function useCancelExecution() {
+  return useExecutionMutation(({ id }: { id: string }) => api.cancelExecution(id));
+}
+
+export function useCreatePr() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: ({ id }: { id: string }) => api.createPr(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tasks", project] });
+    },
+  });
+}
+
+export function useDiff(executionId: string | null) {
+  const project = useProject();
+  return useQuery({
+    queryKey: ["diff", project, executionId],
+    queryFn: () => api.getDiff(executionId!),
+    enabled: !!project && !!executionId,
+  });
+}
+
+export function useDiffComments(executionId: string | null) {
+  const project = useProject();
+  return useQuery({
+    queryKey: ["diffComments", project, executionId],
+    queryFn: () => api.getDiffComments(executionId!),
+    enabled: !!project && !!executionId,
+  });
+}
+
+export function useAddDiffComment() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: ({
+      id,
+      comment,
+    }: {
+      id: string;
+      comment: {
+        commit: string;
+        file: string;
+        side: "new" | "old";
+        lineStart: number;
+        lineEnd: number;
+        body: string;
+      };
+    }) => api.addDiffComment(id, comment),
+    onSuccess: (_d, v) =>
+      qc.invalidateQueries({ queryKey: ["diffComments", project, v.id] }),
+  });
+}
+
+export function useUpdateDiffComment() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: ({
+      id,
+      commentId,
+      patch,
+    }: {
+      id: string;
+      commentId: string;
+      patch: { resolved?: boolean; body?: string };
+    }) => api.updateDiffComment(id, commentId, patch),
+    onSuccess: (_d, v) =>
+      qc.invalidateQueries({ queryKey: ["diffComments", project, v.id] }),
+  });
+}

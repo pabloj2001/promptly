@@ -529,6 +529,26 @@ class StorageService:
         )
         return comment
 
+    def update_diff_comment(
+        self, root: str, name: str, execution_id: str, comment_id: str, *,
+        resolved: Optional[bool] = None, body: Optional[str] = None,
+    ) -> DiffComment:
+        path = paths.diff_comments_path(root, name, execution_id)
+        from .atomic import lock_for
+
+        with lock_for(path):
+            cf = self.read_diff_comments(root, name, execution_id)
+            for comments in cf.by_commit.values():
+                for c in comments:
+                    if c.id == comment_id:
+                        if resolved is not None:
+                            c.resolved = resolved
+                        if body is not None:
+                            c.body = body
+                        write_json(path, cf.model_dump(by_alias=True))
+                        return c
+        raise NotFoundError(f"diff comment {comment_id} not found")
+
     # ── Progress mutations (07) ──────────────────────────────────────────────────
     #
     # All progress.json updates funnel through ``_mutate_progress`` so concurrent

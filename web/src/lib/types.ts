@@ -154,13 +154,45 @@ export interface Step {
 export interface ProgressState {
   executionId: string;
   taskId: string;
+  branch?: string | null;
+  baseSha?: string | null;
   sessionId?: string | null;
   status: ProgressStatus;
+  error?: string | null;
+  doneSummary?: string | null;
   pendingQuestions: Question[];
   pendingPermissions: PermissionRequest[];
   steps: Step[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface DiffFile {
+  path: string;
+  status: string; // git name-status code: A/M/D/R...
+  diff: string; // unified patch text
+}
+
+export interface DiffResponse {
+  baseSha: string;
+  headSha: string;
+  files: DiffFile[];
+}
+
+export interface DiffComment {
+  id: string;
+  file: string;
+  side: "new" | "old";
+  lineStart: number;
+  lineEnd: number;
+  body: string;
+  author: string;
+  resolved: boolean;
+  createdAt: string;
+}
+
+export interface CommentsFile {
+  byCommit: Record<string, DiffComment[]>;
 }
 
 export interface AddressResponse {

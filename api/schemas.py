@@ -132,3 +132,8 @@ class AddDiffCommentRequest(CamelModel):
     line_start: int
     line_end: int
     body: str
+
+
+class UpdateDiffCommentRequest(CamelModel):
+    resolved: Optional[bool] = None
+    body: Optional[str] = None

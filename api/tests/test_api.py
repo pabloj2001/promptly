@@ -277,6 +277,13 @@ def test_diff_comments_storage(client, proj, storage, root):
     got = client.get("/executions/exec-9/comments", params=q(proj)).json()
     assert got["byCommit"]["sha1"][0]["file"] == "a.py"
 
+    # resolve it
+    cid = got["byCommit"]["sha1"][0]["id"]
+    upd = client.put(f"/executions/exec-9/comments/{cid}", params=q(proj),
+                     json={"resolved": True})
+    assert upd.status_code == 200
+    assert upd.json()["resolved"] is True
+
 
 def test_get_progress_after_create(client, proj, storage, root):
     storage.create_execution(root, "Demo", "exec-10", "task-10")

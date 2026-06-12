@@ -8,13 +8,17 @@ import type {
   ChatMessage,
   Comment,
   CommentAnchor,
+  CommentsFile,
   DependencyGraph,
+  DiffComment,
+  DiffResponse,
   DocOut,
   DocType,
   MetadataEntry,
   PermissionsConfig,
   ProgressState,
   ProjectDescriptor,
+  RelatedPR,
   TaskStatus,
 } from "./types";
 
@@ -206,5 +210,49 @@ export const api = {
       method: "POST",
       scoped: true,
       body: { taskId },
+    }),
+  answerQuestion: (id: string, questionId: string, answer: string) =>
+    request<ProgressState>(`/executions/${id}/answer`, {
+      method: "POST",
+      scoped: true,
+      body: { questionId, answer },
+    }),
+  decidePermission: (id: string, requestId: string, decision: "allow" | "deny") =>
+    request<ProgressState>(`/executions/${id}/permission`, {
+      method: "POST",
+      scoped: true,
+      body: { requestId, decision },
+    }),
+  sendFeedback: (id: string, message: string) =>
+    request<ProgressState>(`/executions/${id}/feedback`, {
+      method: "POST",
+      scoped: true,
+      body: { message },
+    }),
+  cancelExecution: (id: string) =>
+    request<ProgressState>(`/executions/${id}/cancel`, { method: "POST", scoped: true }),
+  createPr: (id: string) =>
+    request<RelatedPR>(`/executions/${id}/pr`, { method: "POST", scoped: true }),
+  getDiff: (id: string) => request<DiffResponse>(`/executions/${id}/diff`, { scoped: true }),
+  getDiffComments: (id: string) =>
+    request<CommentsFile>(`/executions/${id}/comments`, { scoped: true }),
+  addDiffComment: (
+    id: string,
+    c: { commit: string; file: string; side: "new" | "old"; lineStart: number; lineEnd: number; body: string },
+  ) =>
+    request<DiffComment>(`/executions/${id}/comments`, {
+      method: "POST",
+      scoped: true,
+      body: c,
+    }),
+  updateDiffComment: (
+    id: string,
+    commentId: string,
+    patch: { resolved?: boolean; body?: string },
+  ) =>
+    request<DiffComment>(`/executions/${id}/comments/${commentId}`, {
+      method: "PUT",
+      scoped: true,
+      body: patch,
     }),
 };

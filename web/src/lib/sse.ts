@@ -36,6 +36,12 @@ export function useOperationsStream() {
   }, [project, qc]);
 }
 
+/**
+ * Subscribe to one execution's SSE stream (07/08). Every event carries the full
+ * ProgressState, so we just write it into the `["execution", …]` cache. On a
+ * status change we also refresh the task lists (task status flips with the run)
+ * and the diff (a completed run adds a commit).
+ */
 export function useExecutionStream(executionId: string | null) {
   const qc = useQueryClient();
   const project = useUiStore((s) => s.activeProject);
@@ -48,22 +54,23 @@ export function useExecutionStream(executionId: string | null) {
     const es = new EventSource(url);
     const key = ["execution", project, executionId];
 
-    const merge = (patch: Partial<ProgressState>) =>
-      qc.setQueryData<ProgressState>(key, (prev) =>
-        prev ? { ...prev, ...patch } : (patch as ProgressState),
-      );
+    const setState = (e: Event) =>
+      qc.setQueryData<ProgressState>(key, JSON.parse((e as MessageEvent).data));
 
-    es.addEventListener("snapshot", (e) =>
-      qc.setQueryData(key, JSON.parse((e as MessageEvent).data)),
-    );
-    es.addEventListener("status", (e) => merge(JSON.parse((e as MessageEvent).data)));
-    // step/question/permission events trigger a refetch of the full snapshot via
-    // the next GET; Build (08) will refine this into granular cache updates.
-    const refetch = () => qc.invalidateQueries({ queryKey: key });
-    es.addEventListener("step", refetch);
-    es.addEventListener("question", refetch);
-    es.addEventListener("permission", refetch);
-    es.onerror = () => es.close();
+    // Backend events (execution.py / internal router): every payload is a full
+    // ProgressState snapshot.
+    for (const name of ["snapshot", "steps", "question", "permission", "progress"]) {
+      es.addEventListener(name, setState);
+    }
+    es.addEventListener("status", (e) => {
+      setState(e);
+      qc.invalidateQueries({ queryKey: ["tasks", project] });
+      qc.invalidateQueries({ queryKey: ["taskGraph", project] });
+      qc.invalidateQueries({ queryKey: ["diff", project, executionId] });
+    });
+    es.onerror = () => {
+      /* EventSource auto-reconnects; the snapshot-on-connect re-syncs state */
+    };
 
     return () => es.close();
   }, [executionId, project, qc]);

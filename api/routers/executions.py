@@ -27,6 +27,7 @@ from ..schemas import (
     FeedbackRequest,
     PermissionDecisionRequest,
     StartExecutionRequest,
+    UpdateDiffCommentRequest,
 )
 from ..services.execution import ExecutionManager
 from ..storage import StorageService
@@ -151,3 +152,17 @@ def add_diff_comment(
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     return storage.add_diff_comment(ap.root, ap.name, execution_id, req.commit, comment)
+
+
+@router.put("/{execution_id}/comments/{comment_id}", response_model=DiffComment)
+def update_diff_comment(
+    execution_id: str,
+    comment_id: str,
+    req: UpdateDiffCommentRequest,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+):
+    return storage.update_diff_comment(
+        ap.root, ap.name, execution_id, comment_id,
+        resolved=req.resolved, body=req.body,
+    )
