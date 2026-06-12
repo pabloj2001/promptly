@@ -1,11 +1,19 @@
+import { createContext, useContext } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { STATUS_META } from "../../lib/status";
 import type { TaskStatus } from "../../lib/types";
 
-// A task node, colored by status. Dimming/selection driven via `data` flags set by
-// the graph on hover/selection.
-export function StatusNode({ data, selected }: NodeProps) {
-  const d = data as { name: string; status?: TaskStatus | null; dimmed?: boolean };
+// The currently "lit" set (hovered task + its dependency tree), or null when nothing
+// is hovered. Delivered via context so hovering doesn't rebuild the nodes array — that
+// churn made React Flow loop mouseenter/leave (cursor + opacity flicker).
+export const LitContext = createContext<Set<string> | null>(null);
+
+// A task node, colored by status. Dimming derives from the hovered dependency tree
+// (LitContext); selection comes from the node prop.
+export function StatusNode({ id, data, selected }: NodeProps) {
+  const d = data as { name: string; status?: TaskStatus | null };
+  const lit = useContext(LitContext);
+  const dimmed = lit ? !lit.has(id) : false;
   const meta = d.status ? STATUS_META[d.status] : null;
   const surface = meta?.surface ?? "bg-white border-slate-300";
   const running = d.status === "in_progress";
@@ -15,9 +23,9 @@ export function StatusNode({ data, selected }: NodeProps) {
         <span className="pointer-events-none absolute -inset-0.5 animate-pulse rounded-lg ring-2 ring-blue-400" />
       )}
       <div
-        className={`rounded-md border px-3 py-2 shadow-sm transition-opacity ${surface} ${
+        className={`cursor-pointer rounded-md border px-3 py-2 shadow-sm transition-opacity ${surface} ${
           selected ? "!border-blue-500 ring-2 ring-blue-300" : ""
-        } ${d.dimmed ? "opacity-30" : "opacity-100"}`}
+        } ${dimmed ? "opacity-30" : "opacity-100"}`}
       >
         <Handle type="target" position={Position.Left} className="!bg-slate-400" />
         <div className="flex items-center gap-2">

@@ -10,7 +10,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { DependencyGraph } from "../../lib/types";
 import { useUiStore } from "../../store";
-import { GroupNode, StatusNode } from "./nodes";
+import { GroupNode, LitContext, StatusNode } from "./nodes";
 import { ancestors, descendants, layoutGraph } from "./layout";
 
 const nodeTypes = { status: StatusNode, group: GroupNode };
@@ -31,30 +31,33 @@ export function GraphView({
   const [hover, setHover] = useState<string | null>(null);
   const base = useMemo(() => layoutGraph(graph), [graph]);
 
-  const { nodes, edges } = useMemo(() => {
-    const anc = hover ? ancestors(hover, graph.edges) : null;
-    const desc = hover ? descendants(hover, graph.edges) : null;
-    const lit = hover ? new Set<string>([hover, ...anc!, ...desc!]) : null;
+  // Hovered task + its dependency tree. Kept out of the nodes array so hovering
+  // doesn't churn React Flow's node bookkeeping (dimming flows via LitContext).
+  const hl = useMemo(() => {
+    if (!hover) return null;
+    const anc = ancestors(hover, graph.edges);
+    const desc = descendants(hover, graph.edges);
+    return { anc, desc, lit: new Set<string>([hover, ...anc, ...desc]) };
+  }, [hover, graph.edges]);
 
-    const nodes: Node[] = base.nodes.map((n) => {
-      if (n.type === "group") return n;
-      const dimmed = lit ? !lit.has(n.id) : false;
-      return {
-        ...n,
-        selected: n.id === selectedTaskId,
-        data: { ...n.data, dimmed },
-      };
-    });
+  // Nodes only depend on selection — never on hover — so the array reference is
+  // stable while the mouse moves over the graph.
+  const nodes: Node[] = useMemo(
+    () =>
+      base.nodes.map((n) =>
+        n.type === "group" ? n : { ...n, selected: n.id === selectedTaskId },
+      ),
+    [base.nodes, selectedTaskId],
+  );
 
-    const inSet = (id: string, s: Set<string> | null, h: string | null) =>
-      !!s && (s.has(id) || id === h);
-
-    const edges: Edge[] = base.edges.map((e) => {
+  const edges: Edge[] = useMemo(() => {
+    const inSet = (id: string, s: Set<string> | null) => !!s && (s.has(id) || id === hover);
+    return base.edges.map((e) => {
       let color = EDGE_BASE;
       let dim = false;
-      if (hover) {
-        const isAnc = inSet(e.source, anc, hover) && inSet(e.target, anc, hover);
-        const isDesc = inSet(e.source, desc, hover) && inSet(e.target, desc, hover);
+      if (hl) {
+        const isAnc = inSet(e.source, hl.anc) && inSet(e.target, hl.anc);
+        const isDesc = inSet(e.source, hl.desc) && inSet(e.target, hl.desc);
         if (isAnc) color = EDGE_ANCESTOR;
         else if (isDesc) color = EDGE_DESCENDANT;
         else {
@@ -68,24 +71,25 @@ export function GraphView({
         markerEnd: { type: MarkerType.ArrowClosed, color },
       };
     });
-    return { nodes, edges };
-  }, [base, hover, selectedTaskId, graph.edges]);
+  }, [base.edges, hl, hover]);
 
   return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      nodeTypes={nodeTypes}
-      nodesDraggable={false}
-      fitView
-      minZoom={0.2}
-      onNodeClick={(_e, n) => n.type !== "group" && onSelect(n.id)}
-      onNodeMouseEnter={(_e, n) => n.type !== "group" && setHover(n.id)}
-      onNodeMouseLeave={() => setHover(null)}
-      proOptions={{ hideAttribution: true }}
-    >
-      <Background />
-      <Controls showInteractive={false} />
-    </ReactFlow>
+    <LitContext.Provider value={hl?.lit ?? null}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        nodesDraggable={false}
+        fitView
+        minZoom={0.2}
+        onNodeClick={(_e, n) => n.type !== "group" && onSelect(n.id)}
+        onNodeMouseEnter={(_e, n) => n.type !== "group" && setHover(n.id)}
+        onNodeMouseLeave={() => setHover(null)}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background />
+        <Controls showInteractive={false} />
+      </ReactFlow>
+    </LitContext.Provider>
   );
 }
