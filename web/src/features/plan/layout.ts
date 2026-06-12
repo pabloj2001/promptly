@@ -5,10 +5,20 @@ import type { DependencyGraph, GraphNode, TaskStatus } from "../../lib/types";
 export const NODE_W = 180;
 export const NODE_H = 52;
 const GROUP_PAD = 28;
-const GROUP_GAP = 64;
+const GROUP_GAP_X = 56;
+const GROUP_GAP_Y = 56;
 const GROUP_HEADER = 28;
 
 const UNGROUPED = "Ungrouped";
+
+interface Block {
+  group: string;
+  placed: { id: string; x: number; y: number }[];
+  blockW: number;
+  blockH: number;
+  x: number;
+  y: number;
+}
 
 export interface StatusNodeData extends Record<string, unknown> {
   name: string;
@@ -17,9 +27,11 @@ export interface StatusNodeData extends Record<string, unknown> {
 
 /**
  * Lay the dependency graph out as React Flow nodes/edges. Strategy (per 06): run
- * dagre on each task-group's subgraph, then stack the group blocks vertically so
- * clusters never overlap; group containers are background nodes sized to their
- * block. Cross-group edges still render between absolute positions.
+ * dagre on each task-group's subgraph to get a compact block per group, then
+ * shelf-pack those blocks into a grid (rows that wrap at a target width) so the
+ * groups fill the space instead of stacking in one tall column. Group containers
+ * are background nodes sized to their block; cross-group edges render between
+ * absolute positions.
  */
 export function layoutGraph(graph: DependencyGraph): { nodes: Node[]; edges: Edge[] } {
   const byGroup = new Map<string, GraphNode[]>();
@@ -29,14 +41,13 @@ export function layoutGraph(graph: DependencyGraph): { nodes: Node[]; edges: Edg
   }
   const idToGroup = new Map(graph.nodes.map((n) => [n.id, n.taskGroup || UNGROUPED]));
 
-  const nodes: Node[] = [];
-  let offsetY = 0;
-
   // Stable group order: named groups first (alpha), Ungrouped last.
   const groupNames = [...byGroup.keys()].sort((a, b) =>
     a === UNGROUPED ? 1 : b === UNGROUPED ? -1 : a.localeCompare(b),
   );
 
+  // Pass 1: lay out each group internally (dagre) and measure its block.
+  const blocks: Block[] = [];
   for (const group of groupNames) {
     const groupNodes = byGroup.get(group)!;
     const g = new dagre.graphlib.Graph();
@@ -63,37 +74,66 @@ export function layoutGraph(graph: DependencyGraph): { nodes: Node[]; edges: Edg
       maxY = Math.max(maxY, y + NODE_H);
     }
 
-    const blockW = maxX + GROUP_PAD * 2;
-    const blockH = maxY + GROUP_PAD * 2 + GROUP_HEADER;
+    blocks.push({
+      group,
+      placed,
+      blockW: maxX + GROUP_PAD * 2,
+      blockH: maxY + GROUP_PAD * 2 + GROUP_HEADER,
+      x: 0,
+      y: 0,
+    });
+  }
 
-    // Group container (background) node.
+  // Pass 2: shelf-pack blocks into a grid. Aim for a roughly landscape canvas:
+  // target row width ≈ sqrt(totalArea · 1.6), but never narrower than the widest
+  // block (so no block is forced onto its own overflowing row).
+  const totalArea = blocks.reduce((a, b) => a + b.blockW * b.blockH, 0);
+  const widest = blocks.reduce((m, b) => Math.max(m, b.blockW), 0);
+  const targetWidth = Math.max(widest, Math.sqrt(totalArea * 1.6));
+
+  let cursorX = 0;
+  let cursorY = 0;
+  let rowH = 0;
+  for (const b of blocks) {
+    if (cursorX > 0 && cursorX + b.blockW > targetWidth) {
+      // Wrap to the next row.
+      cursorX = 0;
+      cursorY += rowH + GROUP_GAP_Y;
+      rowH = 0;
+    }
+    b.x = cursorX;
+    b.y = cursorY;
+    cursorX += b.blockW + GROUP_GAP_X;
+    rowH = Math.max(rowH, b.blockH);
+  }
+
+  // Pass 3: emit React Flow nodes at their packed positions.
+  const nodes: Node[] = [];
+  for (const b of blocks) {
     nodes.push({
-      id: `group:${group}`,
+      id: `group:${b.group}`,
       type: "group",
-      position: { x: 0, y: offsetY },
-      data: { label: group },
+      position: { x: b.x, y: b.y },
+      data: { label: b.group },
       draggable: false,
       selectable: false,
-      style: { width: blockW, height: blockH },
+      style: { width: b.blockW, height: b.blockH },
       zIndex: 0,
     });
 
-    // Task nodes, absolute-positioned inside the block.
-    for (const pl of placed) {
-      const gn = groupNodes.find((n) => n.id === pl.id)!;
+    for (const pl of b.placed) {
+      const gn = byGroup.get(b.group)!.find((n) => n.id === pl.id)!;
       nodes.push({
         id: gn.id,
         type: "status",
         position: {
-          x: GROUP_PAD + pl.x,
-          y: offsetY + GROUP_HEADER + GROUP_PAD + pl.y,
+          x: b.x + GROUP_PAD + pl.x,
+          y: b.y + GROUP_HEADER + GROUP_PAD + pl.y,
         },
         data: { name: gn.name, status: gn.status } as StatusNodeData,
         zIndex: 1,
       });
     }
-
-    offsetY += blockH + GROUP_GAP;
   }
 
   const edges: Edge[] = graph.edges.map((e) => ({

@@ -26,7 +26,10 @@ Source: `GET /tasks/graph?project=` → `{ nodes, edges }` (excludes `removed` u
   Flow parent/group nodes or a background region). All tasks of a group cluster together;
   **dependency edges may cross group boundaries** and must still render correctly.
 - **Layout:** auto-layout with a DAG layout engine (e.g. `dagre`/`elkjs`) grouped by
-  `taskGroup`, computed client-side from the graph payload. Persist manual position nudges?
+  `taskGroup`, computed client-side from the graph payload. Each group is laid out
+  internally with dagre, then the resulting group blocks are **shelf-packed into a grid**
+  (rows wrapping at a target width derived from total block area) so groups fill the space
+  rather than stacking in one tall column. Persist manual position nudges?
   v1: recompute layout each load (positions not persisted) — revisit if users want pinning.
 - **Hover highlighting:** hovering a task highlights it plus its **entire dependency tree**
   (transitive ancestors *and* descendants). Distinguish direction by edge color:
@@ -76,8 +79,9 @@ A hover/floating **+** button opens `PromptDialog` (04): prompt for what the tas
 5. Board view with drag-to-change-status (optimistic + transition validation).
 6. View toggle + persistence; floating "add task" via `PromptDialog`.
 
-> **Build status:** implemented. Graph (React Flow + per-group dagre layout with
-> background group containers, hover ancestor/descendant highlighting with two-tone edges),
+> **Build status:** implemented. Graph (React Flow + per-group dagre layout, group blocks
+> shelf-packed into a grid, background group containers, hover ancestor/descendant
+> highlighting with two-tone edges via a stable nodes array + LitContext),
 > Kanban board (HTML5 drag, optimistic status change + revert), shared side panel
 > (editable metadata + before/after + Open-in-Design + Execute), center-bottom Graph/Board
 > toggle (persisted in the ui store), and floating add-task (`PromptDialog`, async create).
