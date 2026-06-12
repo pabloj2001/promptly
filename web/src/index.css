@@ -2,7 +2,10 @@
 @plugin "@tailwindcss/typography";
 
 :root {
-  color-scheme: light dark;
+  /* The UI is designed light-only (no dark: variants). Pin the color scheme so
+     the browser renders form controls light even under an OS dark theme —
+     otherwise textareas/inputs get a dark UA background with dark app text. */
+  color-scheme: light;
 }
 
 html,
@@ -13,5 +16,7 @@ body,
 
 body {
   margin: 0;
+  background-color: #ffffff;
+  color: #0f172a; /* slate-900 */
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
