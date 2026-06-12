@@ -82,6 +82,9 @@ have one. Only after a spec exists does the normal create/import flow become ava
 ## Doc viewer / editor
 - Render markdown (`react-markdown`). The trailing `promptly:comments` block is parsed out by
   the API and **never rendered as markdown** — comments come back as structured data.
+- **Mode toggle is a floating action button** (no toolbar View/Edit tabs): a **pencil** FAB
+  enters edit mode; while editing it becomes a **checkmark** that saves and returns to view
+  (hidden while an operation is in progress).
 - **Manual edit** mode — **Obsidian-style live preview** (`LiveEditor`): the doc stays
   rendered as Markdown, and only the **block the cursor is in** turns into a raw-text box;
   clicking another block renders the previous one and edits the new one, clicking outside

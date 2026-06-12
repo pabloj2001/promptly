@@ -86,7 +86,16 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
     setSel(null);
   };
 
-  const saveBody = () => save.mutate({ collection, id: entry.id, body: draft });
+  const saveAndView = async () => {
+    try {
+      if (draft !== data.body) {
+        await save.mutateAsync({ collection, id: entry.id, body: draft });
+      }
+      setMode("view");
+    } catch {
+      // keep edit mode on failure
+    }
+  };
 
   const runAddress = async () => {
     setAddressing(true);
@@ -114,41 +123,18 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Toolbar */}
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-2">
-          <div className="flex gap-1">
-            <ToggleBtn active={mode === "view"} onClick={() => setMode("view")}>
-              View
-            </ToggleBtn>
-            <ToggleBtn
-              active={mode === "edit"}
-              onClick={() => !busy && setMode("edit")}
-              disabled={busy}
-            >
-              Edit
-            </ToggleBtn>
-          </div>
-          <div className="flex items-center gap-2">
-            {addressError && <span className="text-xs text-red-600">{addressError}</span>}
-            <button
-              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-2.5 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-              onClick={runAddress}
-              disabled={addressing || busy || unresolved.length === 0}
-            >
-              {addressing && <Spinner />}
-              Address comments with AI
-            </button>
-            {mode === "edit" && (
-              <button
-                className="rounded-md bg-blue-600 px-2.5 py-1 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                onClick={saveBody}
-                disabled={save.isPending || draft === data.body}
-              >
-                Save
-              </button>
-            )}
-          </div>
+        <div className="flex items-center justify-end gap-2 border-b border-slate-200 px-4 py-2">
+          {addressError && <span className="text-xs text-red-600">{addressError}</span>}
+          <button
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-2.5 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+            onClick={runAddress}
+            disabled={addressing || busy || unresolved.length === 0}
+          >
+            {addressing && <Spinner />}
+            Address comments with AI
+          </button>
         </div>
 
         {/* In-progress banner for an existing doc being edited */}
@@ -180,6 +166,24 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
             </div>
           )}
         </div>
+
+        {/* Floating edit / save-and-view button */}
+        {!busy && (
+          <button
+            className="absolute bottom-5 right-5 flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 disabled:opacity-50"
+            onClick={mode === "view" ? () => setMode("edit") : saveAndView}
+            disabled={save.isPending}
+            title={mode === "view" ? "Edit" : "Save & view"}
+          >
+            {save.isPending ? (
+              <Spinner />
+            ) : mode === "view" ? (
+              <PencilIcon />
+            ) : (
+              <CheckIcon />
+            )}
+          </button>
+        )}
       </div>
 
       {/* Right panel: Chat / Comments */}
@@ -301,6 +305,23 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
         </div>
       </Modal>
     </div>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5" aria-hidden>
+      <path d="M13.586 3.586a2 2 0 112.828 2.828l-8.5 8.5a2 2 0 01-.878.512l-3.2.914a.5.5 0 01-.618-.618l.914-3.2a2 2 0 01.512-.878l8.5-8.5z" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2.5}
+         strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
+      <path d="M4 10.5l4 4 8-9" />
+    </svg>
   );
 }
 
