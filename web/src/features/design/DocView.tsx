@@ -175,7 +175,7 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
         {/* Body */}
         <div className="min-h-0 flex-1 overflow-auto p-6">
           {mode === "view" || busy ? (
-            <article className="prose prose-slate max-w-none prose-pre:bg-slate-100">
+            <article className="prose prose-slate max-w-none prose-pre:border prose-pre:border-slate-200 prose-pre:bg-slate-100 prose-pre:text-slate-800">
               <Markdown remarkPlugins={[remarkGfm]}>{data.body || "*(empty)*"}</Markdown>
             </article>
           ) : (
@@ -296,7 +296,7 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
         description="The AI revised this document to address the comments. Accept to apply."
       >
         <div className="max-h-[50vh] overflow-auto rounded border border-slate-200 bg-slate-50 p-3">
-          <article className="prose prose-sm max-w-none">
+          <article className="prose prose-slate prose-sm max-w-none prose-pre:border prose-pre:border-slate-200 prose-pre:bg-slate-100 prose-pre:text-slate-800">
             <Markdown remarkPlugins={[remarkGfm]}>{preview?.body ?? ""}</Markdown>
           </article>
         </div>
