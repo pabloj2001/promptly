@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { PromptDialog, type PromptResult } from "../../components/PromptDialog";
 import { Spinner } from "../../components/Spinner";
-import { StatusBadge } from "../../components/StatusBadge";
 import { GenerateTasksButton } from "../../components/GenerateTasksButton";
+import { STATUS_META } from "../../lib/status";
 import { useCreateDoc, useCreateTask, useDocs, useTasks } from "../../lib/queries";
 import type { MetadataEntry } from "../../lib/types";
 import { EditableMetadata } from "./EditableMetadata";
@@ -58,23 +58,29 @@ export function Sidebar({
 
   const Row = ({ entry }: { entry: MetadataEntry }) => {
     const op = entry.operation;
+    const meta = entry.status ? STATUS_META[entry.status] : null;
     return (
       <button
-        className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-sm ${
+        className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm ${
           selectedId === entry.id
             ? "bg-blue-100 text-blue-800"
             : "text-slate-700 hover:bg-slate-100"
         }`}
         onClick={() => onSelect(entry.id)}
       >
-        <span className="truncate">{entry.name}</span>
+        {meta && (
+          <span
+            title={meta.label}
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`}
+          />
+        )}
+        <span className="min-w-0 flex-1 truncate">{entry.name}</span>
         {op?.status === "running" && <Spinner className="text-slate-400" />}
         {op?.status === "failed" && (
           <span title={op.error ?? "failed"} className="text-xs text-red-500">
             ⚠
           </span>
         )}
-        {!op && entry.status && <StatusBadge status={entry.status} />}
       </button>
     );
   };
