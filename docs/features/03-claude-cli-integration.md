@@ -118,9 +118,13 @@ loading state meanwhile (05).
   ids) and then runs each task's body generation through the normal `generate_task` flow, so
   the tasks appear immediately and fill in asynchronously (02/05/06).
 
-> **Import is not generation.** Importing a doc or task (paste/upload one or more files, 05)
-> bypasses Claude entirely — the API writes each provided body verbatim, routing by the chosen
-> type (doc vs. task). No template, no CLI call.
+> **Import writes the body verbatim, then fills metadata with AI.** Importing a doc or task
+> (paste/upload one or more files, 05) writes each provided body **verbatim** (no AI touches the
+> body), routing by the chosen type (doc vs. task). It then kicks off a **background
+> metadata-only generation op** (`import_metadata` template → `ClaudeService.
+> derive_import_metadata`) that reads the body + repo and patches `description` (and, for tasks,
+> `taskGroup`); the body is never modified. Reuses the operations SSE + `operation` running flag
+> like normal generation.
 
 ## Mode B — stateful execution session
 Used by the Execution Engine ([07](./07-execution-engine.md)). The session:

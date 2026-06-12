@@ -106,3 +106,30 @@ class OperationManager:
                 f"(chat failed: {e})",
             )
             self._publish(project, entry_id, collection, "chat", "failed", str(e))
+
+    # ── import metadata ─────────────────────────────────────────────────────────────
+
+    def start_import_metadata(self, root: str, project: str, entry_id: str, collection: str,
+                              *, doc_type: DocType) -> None:
+        self._spawn(self._run_import_metadata(
+            root, project, entry_id, collection, doc_type=doc_type,
+        ))
+
+    async def _run_import_metadata(self, root: str, project: str, entry_id: str,
+                                   collection: str, *, doc_type: DocType) -> None:
+        """Fill metadata (description, taskGroup) for a verbatim-imported entry. The
+        body is left untouched — only metadata is patched."""
+        try:
+            _, body, _ = self.storage.read_document(root, project, collection, entry_id)
+            meta = await self.claude.derive_import_metadata(
+                root=root, project=project, body=body, doc_type=doc_type,
+            )
+            patch: dict = {"description": meta.get("description", "")}
+            if collection == "tasks" and meta.get("task_group"):
+                patch["taskGroup"] = meta["task_group"]
+            self.storage.patch_metadata(root, project, collection, entry_id, patch)
+            self.storage.clear_operation(root, project, collection, entry_id)
+            self._publish(project, entry_id, collection, "generate", "completed")
+        except Exception as e:  # noqa: BLE001
+            self.storage.fail_operation(root, project, collection, entry_id, str(e))
+            self._publish(project, entry_id, collection, "generate", "failed", str(e))

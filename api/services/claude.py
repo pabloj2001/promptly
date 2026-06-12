@@ -480,6 +480,34 @@ class ClaudeService:
         result = await self._invoke(rendered, **self._gen_cli_args(root, project))
         return _strip_fences(result.text).strip()
 
+    async def derive_import_metadata(
+        self,
+        *,
+        root: str,
+        project: str,
+        body: str,
+        doc_type: DocType | str,
+    ) -> dict:
+        """Derive metadata (description + taskGroup) for a verbatim-imported document.
+        Never touches the body. Falls back to a heuristic description if unparseable."""
+        type_val = doc_type.value if isinstance(doc_type, DocType) else doc_type
+        rendered = self.prompts.render(
+            "import_metadata",
+            project_name=project,
+            project_path=self._project_path(root, project),
+            repo_root=root,
+            doc_type=type_val,
+            body=body[:_BODY_BUDGET],
+        )
+        result = await self._invoke(rendered, **self._gen_cli_args(root, project))
+        parsed = _parse_structured(result.text, require="description")
+        if parsed is None:
+            return {"description": _derive_description(body), "task_group": ""}
+        return {
+            "description": str(parsed.get("description", "")).strip(),
+            "task_group": str(parsed.get("taskGroup", "")).strip(),
+        }
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────────
 

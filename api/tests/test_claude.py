@@ -98,6 +98,37 @@ async def test_generate_document_raises_on_empty(svc, project, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_derive_import_metadata_parses(svc, project, monkeypatch):
+    name, root = project
+
+    async def fake_invoke(prompt, **kw):
+        assert kw["cwd"] == root  # generation profile (repo-root reads)
+        return GenResult(text='{"description":"A login task","taskGroup":"Backend"}')
+
+    monkeypatch.setattr(svc, "_invoke", fake_invoke)
+    meta = await svc.derive_import_metadata(
+        root=root, project=name, body="# Auth\nstuff", doc_type=DocType.task,
+    )
+    assert meta == {"description": "A login task", "task_group": "Backend"}
+
+
+@pytest.mark.asyncio
+async def test_derive_import_metadata_falls_back(svc, project, monkeypatch):
+    """Unparseable output → heuristic description, empty group."""
+    name, root = project
+
+    async def fake_invoke(prompt, **kw):
+        return GenResult(text="sorry, no json here")
+
+    monkeypatch.setattr(svc, "_invoke", fake_invoke)
+    meta = await svc.derive_import_metadata(
+        root=root, project=name, body="# Title\nFirst line summary.", doc_type=DocType.doc,
+    )
+    assert meta["description"] == "First line summary."
+    assert meta["task_group"] == ""
+
+
+@pytest.mark.asyncio
 async def test_name_hint_overrides(svc, project, monkeypatch):
     name, root = project
 

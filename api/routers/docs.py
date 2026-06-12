@@ -14,7 +14,7 @@ from ..deps import (
     get_operations,
     get_storage,
 )
-from ..models import ChatHistory, ChatMessage, Comment, MetadataEntry
+from ..models import ChatHistory, ChatMessage, Comment, DocType, MetadataEntry
 from ..schemas import (
     AddCommentRequest,
     AddressResponse,
@@ -78,12 +78,18 @@ def import_doc(
     req: ImportDocRequest,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
+    ops: OperationManager = Depends(get_operations),
 ):
-    """Import an existing doc verbatim (no AI). Writes the body and metadata
-    synchronously."""
-    return storage.create_entry(
+    """Import an existing doc/task verbatim (the body is written as-is). Then kick off
+    a background AI operation to fill metadata (description, and taskGroup for tasks) —
+    the body is never modified."""
+    entry = storage.create_entry(
         ap.root, ap.name, type=req.type, display_name=req.name, body=req.body,
     )
+    collection = "tasks" if req.type == DocType.task else "docs"
+    storage.begin_operation(ap.root, ap.name, collection, entry.id, "generate")
+    ops.start_import_metadata(ap.root, ap.name, entry.id, collection, doc_type=req.type)
+    return storage.get_entry(ap.root, ap.name, collection, entry.id)
 
 
 @router.put("/{doc_id}", response_model=MetadataEntry)

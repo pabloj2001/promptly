@@ -44,6 +44,13 @@ class FakeOperations:
         )
         self.storage.clear_operation(root, project, collection, entry_id)
 
+    def start_import_metadata(self, root, project, entry_id, collection, *, doc_type):
+        patch = {"description": "auto import description"}
+        if collection == "tasks":
+            patch["taskGroup"] = "Imported"
+        self.storage.patch_metadata(root, project, collection, entry_id, patch)
+        self.storage.clear_operation(root, project, collection, entry_id)
+
 
 @pytest.fixture
 def client(promptly_home, root):
@@ -131,8 +138,21 @@ def test_import_doc_verbatim(client, proj):
     entry = r.json()
     assert entry["file"] == "docs/imported.md"
     got = client.get(f"/docs/{entry['id']}", params=q(proj)).json()
-    assert got["body"].strip() == "# Hi\nverbatim"
-    assert got["meta"]["operation"] is None  # no AI op
+    assert got["body"].strip() == "# Hi\nverbatim"  # body written verbatim
+    # AI fills metadata in the background (synchronous in tests): op cleared, desc set.
+    assert got["meta"]["operation"] is None
+    assert got["meta"]["description"] == "auto import description"
+
+
+def test_import_task_fills_group(client, proj):
+    r = client.post("/docs/import", params=q(proj),
+                    json={"name": "Imported Task", "type": "task", "body": "# Do a thing"})
+    assert r.status_code == 201, r.text
+    entry = r.json()
+    assert entry["file"].startswith("tasks/")
+    got = client.get(f"/tasks/{entry['id']}", params=q(proj)).json()
+    assert got["meta"]["description"] == "auto import description"
+    assert got["meta"]["taskGroup"] == "Imported"
 
 
 def test_import_project_spec(client, proj):

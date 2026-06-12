@@ -1,0 +1,24 @@
+{# vars: project_name, project_path, repo_root, doc_type, body #}
+{% import "_shared.md.j2" as s -%}
+A {{ doc_type }} was just imported verbatim into the software project "{{ project_name }}".
+Your job is to derive its metadata — you must NOT rewrite or change the document body.
+
+{{ s.read_first(project_name, project_path) }}
+
+Then, from the imported document below, produce:
+- `description`: a single concise sentence summarizing what this {{ doc_type }} is about.
+{% if doc_type == "task" -%}
+- `taskGroup`: a short group/category name for this task. Prefer reusing an existing group
+  name from `{{ project_path }}tasks/` when one fits; otherwise pick a sensible new one. Use
+  an empty string if grouping doesn't apply.
+{%- else -%}
+- `taskGroup`: leave as an empty string (only tasks are grouped).
+{%- endif %}
+
+Respond with ONLY a single JSON object — no code fences, no commentary before or after —
+in exactly this shape:
+{"description": "<one sentence>", "taskGroup": "<group or empty string>"}
+
+<document>
+{{ body }}
+</document>
