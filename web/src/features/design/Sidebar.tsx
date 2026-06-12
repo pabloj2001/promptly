@@ -87,7 +87,7 @@ export function Sidebar({
   };
 
   return (
-    <aside className="flex h-full w-72 flex-col border-r border-slate-200 bg-slate-50">
+    <aside className="flex h-full w-80 flex-col border-r border-slate-200 bg-slate-50">
       {selected && (
         <div className="border-b-2 border-slate-300 bg-white shadow-sm">
           <button

@@ -198,7 +198,7 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
       </div>
 
       {/* Right panel: Chat / Comments */}
-      <div className="flex w-80 flex-col border-l border-slate-200 bg-slate-50">
+      <div className="flex w-96 flex-col border-l border-slate-200 bg-slate-50">
         <div className="flex gap-1 border-b border-slate-200 p-2">
           <ToggleBtn active={panel === "chat"} onClick={() => setPanel("chat")}>
             Chat
