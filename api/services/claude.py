@@ -180,24 +180,26 @@ class ClaudeService:
         self, root: str, project: str, *, task_name: str, task_file: str,
         worktree: str, dependency_names: list[str],
     ) -> str:
-        # Absolute, live locations so the prompt matches the scoped read dirs
-        # (docs/ + tasks/) — not the worktree's committed snapshot.
+        # Inline the task spec (Claude must have it verbatim). The project spec and
+        # sibling docs/tasks are read by path from the worktree's own copies (the
+        # worktree is a checkout containing the committed project docs), so reads stay
+        # confined to the worktree.
+        from pathlib import Path
+
         pdir = paths.project_dir(root, project)
-        task_file_abs = str(pdir / task_file)
-        spec_path = paths.project_spec_path(root, project)
-        project_spec = ""
-        if spec_path.exists():
-            project_spec = spec_path.read_text(encoding="utf-8")[:_BODY_BUDGET]
+        tf = pdir / task_file
+        task_spec = tf.read_text(encoding="utf-8")[:_BODY_BUDGET] if tf.exists() else ""
+        proj_in_wt = Path(worktree) / pdir.relative_to(root)
         return self.prompts.render(
             "execute_task",
             project_name=project,
             task_name=task_name,
-            task_file=task_file_abs,
-            docs_dir=str(paths.docs_dir(root, project)),
-            tasks_dir=str(paths.tasks_dir(root, project)),
+            task_spec=task_spec,
+            project_spec_path=str(proj_in_wt / "project.md"),
+            docs_dir=str(proj_in_wt / "docs"),
+            tasks_dir=str(proj_in_wt / "tasks"),
             worktree=worktree,
             dependency_names=dependency_names,
-            project_spec=project_spec,
         )
 
     def build_run_command(
@@ -229,13 +231,12 @@ class ClaudeService:
         allow: list[str] = settings["permissions"]["allow"]
         skip_hook = cli.permission_mode == "bypassPermissions"
 
-        # Explicit read scope: the project's living planning dirs (+ any user extras).
-        # The worktree is cwd, so it's read+write without being listed here.
-        read_dirs = [
-            str(paths.docs_dir(root, project)),
-            str(paths.tasks_dir(root, project)),
-            *cfg.additional_read_dirs,
-        ]
+        # Read scope = the worktree only (cwd). The worktree is a checkout that
+        # already contains the codebase AND the committed project docs (project.md,
+        # docs/, tasks/ — committed just before the run), so nothing outside it needs
+        # to be added. No --add-dir of the repo/project dir => no executions/ or
+        # whole-repo exposure. Users can still widen via additionalReadDirs.
+        read_dirs = list(cfg.additional_read_dirs)
         settings["permissions"]["additionalDirectories"] = read_dirs
 
         callback_env = {

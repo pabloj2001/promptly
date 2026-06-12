@@ -41,16 +41,103 @@ def branch_name(task_slug: str, execution_id: str) -> str:
     return f"promptly/{slug}-{short}"
 
 
-def add_worktree(root: str, worktree: str | Path, branch: str) -> str:
-    """Create ``branch`` + a linked worktree at ``worktree`` from the root HEAD.
+def add_worktree(root: str, worktree: str | Path, branch: str, base: str = "HEAD") -> str:
+    """Create ``branch`` + a linked worktree at ``worktree`` from ``base`` (a branch
+    name or ref; defaults to the current HEAD).
 
     Returns the base commit sha the worktree was created from (used later to
     compute diffs).
     """
-    base_sha = _git(["rev-parse", "HEAD"], cwd=root).strip()
+    base_sha = _git(["rev-parse", base], cwd=root).strip()
     Path(worktree).parent.mkdir(parents=True, exist_ok=True)
-    _git(["worktree", "add", "-b", branch, str(worktree), "HEAD"], cwd=root)
+    _git(["worktree", "add", "-b", branch, str(worktree), base], cwd=root)
     return base_sha
+
+
+# ── base-branch sync (07) ─────────────────────────────────────────────────────
+
+
+def current_branch(root: str | Path) -> str:
+    return _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=root).strip()
+
+
+def _has_upstream(cwd: str | Path) -> bool:
+    return subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        cwd=str(cwd), capture_output=True, text=True,
+    ).returncode == 0
+
+
+def commit_paths(root: str | Path, rel_paths: list[str], message: str) -> Optional[str]:
+    """Stage the given repo-relative paths and commit them (respecting .gitignore).
+    Returns the new sha, or None if there was nothing to commit."""
+    _git(["add", "--", *rel_paths], cwd=root)
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--quiet", "--", *rel_paths], cwd=str(root)
+    ).returncode
+    if staged == 0:  # nothing staged
+        return None
+    _git(["commit", "-m", message, "--", *rel_paths], cwd=root)
+    return head_sha(root)
+
+
+def pull_base(root: str | Path, branch: str) -> bool:
+    """Fast-forward the base branch from its upstream, if one is configured.
+    Best-effort: returns True if anything was fetched/updated, False otherwise.
+    Never raises on network/non-ff issues — sync degrades to local-only."""
+    if not _has_upstream(root):
+        return False
+    try:
+        before = head_sha(root)
+        subprocess.run(["git", "pull", "--ff-only"], cwd=str(root),
+                       capture_output=True, text=True)
+        return head_sha(root) != before
+    except GitError:
+        return False
+
+
+def push_base(root: str | Path, branch: str) -> None:
+    """Push the base branch if a remote exists. Best-effort (no raise)."""
+    remotes = subprocess.run(["git", "remote"], cwd=str(root),
+                             capture_output=True, text=True).stdout.strip()
+    if not remotes:
+        return
+    args = ["push"] if _has_upstream(root) else ["push", "-u", "origin", branch]
+    subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True)
+
+
+def sync_worktree(worktree: str | Path, base_branch: str) -> dict:
+    """Bring the worktree's branch up to date with ``base_branch`` (07).
+
+    Stashes uncommitted work, merges the base in, pops the stash. Returns
+    ``{"updated": bool, "conflicts": [paths]}``. Conflicts (from the merge or the
+    stash pop) are left in the tree for an AI pass to resolve before resuming.
+    """
+    ahead = _git(["rev-list", "--count", f"HEAD..{base_branch}"], cwd=worktree).strip()
+    if ahead == "0":
+        return {"updated": False, "conflicts": []}
+
+    dirty = bool(_git(["status", "--porcelain"], cwd=worktree).strip())
+    if dirty:
+        subprocess.run(["git", "stash", "push", "-u", "-m", "promptly-sync"],
+                       cwd=str(worktree), capture_output=True, text=True)
+
+    merge = subprocess.run(
+        ["git", "merge", "--no-edit", base_branch],
+        cwd=str(worktree), capture_output=True, text=True,
+    )
+    conflicts = _conflicted(worktree)
+    if not conflicts and dirty:
+        subprocess.run(["git", "stash", "pop"], cwd=str(worktree),
+                       capture_output=True, text=True)
+        conflicts = _conflicted(worktree)
+    _ = merge  # returncode reflected by conflicts
+    return {"updated": True, "conflicts": conflicts}
+
+
+def _conflicted(worktree: str | Path) -> list[str]:
+    out = _git(["diff", "--name-only", "--diff-filter=U"], cwd=worktree).strip()
+    return [p for p in out.splitlines() if p]
 
 
 def remove_worktree(root: str, worktree: str | Path, branch: Optional[str] = None) -> None:

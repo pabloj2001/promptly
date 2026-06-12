@@ -43,7 +43,7 @@ def test_gitignore_idempotent(storage, root, promptly_home):
     storage.create_project("App", root)
     storage.ensure_gitignore(root)  # second call
     gi = (Path(root) / ".gitignore").read_text()
-    assert gi.count("projects/*/executions/*/worktree/") == 1
+    assert gi.count("projects/*/executions/") == 1
 
 
 def test_remove_project(storage, root, promptly_home):

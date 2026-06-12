@@ -60,6 +60,33 @@ def test_worktree_lifecycle(root, tmp_path):
     assert not Path(wt).exists()
 
 
+def test_sync_worktree_ff_and_conflict(root, tmp_path):
+    from pathlib import Path
+
+    _seed_repo(root)
+    wt = str(tmp_path / "wt")
+    base_branch = worktree.current_branch(root)
+    worktree.add_worktree(root, wt, worktree.branch_name("t", "syncid01"), base=base_branch)
+
+    # Base advances with a non-overlapping file -> clean fast-forward into worktree.
+    Path(root, "base_only.txt").write_text("from base\n")
+    _git(["add", "-A"], root)
+    _git(["commit", "-q", "-m", "base advance"], root)
+    res = worktree.sync_worktree(wt, base_branch)
+    assert res["updated"] and not res["conflicts"]
+    assert Path(wt, "base_only.txt").exists()
+
+    # Now both sides edit README differently -> merge conflict surfaced.
+    Path(root, "README.md").write_text("base edit\n")
+    _git(["add", "-A"], root)
+    _git(["commit", "-q", "-m", "base README"], root)
+    Path(wt, "README.md").write_text("worktree edit\n")
+    _git(["add", "-A"], wt)
+    _git(["commit", "-q", "-m", "wt README"], wt)
+    res2 = worktree.sync_worktree(wt, base_branch)
+    assert res2["updated"] and "README.md" in res2["conflicts"]
+
+
 # ── internal callbacks (MCP server / hook talk back here) ────────────────────────
 
 
@@ -179,6 +206,7 @@ async def test_answer_resumes_with_session(storage, root, monkeypatch):
         calls.update(prompt=prompt, session_id=session_id, eid=eid)
 
     monkeypatch.setattr(em, "_run", fake_run)
+    monkeypatch.setattr(em, "_sync_for_resume", lambda *a: "")  # git sync tested elsewhere
     await em.answer(root, "Demo", "e5", q.id, "FastAPI")
     # the spawned task runs on the loop; let it execute
     import asyncio
@@ -208,6 +236,7 @@ async def test_permission_allow_resumes_with_grant(storage, root, monkeypatch):
         captured["prompt"] = prompt
 
     monkeypatch.setattr(em, "_run", fake_run)
+    monkeypatch.setattr(em, "_sync_for_resume", lambda *a: "")  # git sync tested elsewhere
     await em.decide_permission(root, "Demo", "e6", pr.id, "allow")
     import asyncio
     await asyncio.sleep(0)
@@ -220,10 +249,9 @@ async def test_permission_allow_resumes_with_grant(storage, root, monkeypatch):
 
 
 def test_build_run_command_scoped_default(storage, root):
-    """Default profile: auto mode (no prompts) WITH explicit scoping — reads limited
-    to docs/ + tasks/, writes gated to the worktree by the hook in hard-deny mode."""
+    """Default profile: auto mode (no prompts) WITH explicit scoping — reads confined
+    to the worktree (no add-dir), writes gated to the worktree by the hook (deny)."""
     from api.services.claude import ClaudeService
-    from api.storage import paths
 
     storage.create_project("Demo", root)
     claude = ClaudeService(storage, internal_token="secret-tok",
@@ -236,14 +264,12 @@ def test_build_run_command_scoped_default(storage, root):
     assert "--resume" in args and "sess-Z" in args
     assert "auto" in args  # unattended, no prompts
 
-    # read scope = docs/ + tasks/ only (NOT the repo root)
+    # read scope = the worktree (cwd) only — no --add-dir of repo/project/docs/tasks
     add_dirs = [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
-    assert str(paths.docs_dir(root, "Demo")) in add_dirs
-    assert str(paths.tasks_dir(root, "Demo")) in add_dirs
-    assert root not in add_dirs
+    assert add_dirs == []
 
     settings = json.loads(args[args.index("--settings") + 1])
-    assert settings["permissions"]["additionalDirectories"] == add_dirs
+    assert settings["permissions"]["additionalDirectories"] == []
     assert "PreToolUse" in settings["hooks"]  # write boundary even under auto
     assert settings["hooks"]["PreToolUse"][0]["matcher"] == "Write|Edit|MultiEdit|NotebookEdit"
     assert "Bash" in settings["permissions"]["allow"]  # bash runs unattended

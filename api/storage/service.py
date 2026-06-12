@@ -97,9 +97,11 @@ class StorageService:
         registry.remove_project(name)
 
     def ensure_gitignore(self, root: str) -> None:
-        """Idempotently ensure the root ``.gitignore`` ignores execution
-        worktrees (07). Only appends the line if missing."""
-        line = "projects/*/executions/*/worktree/"
+        """Idempotently ensure the root ``.gitignore`` ignores execution runtime
+        state (07). The whole ``executions/`` tree is local-only (worktrees +
+        progress/comments); only ``project.md``/``docs/``/``tasks/`` are versioned,
+        so committing ``projects/<name>/`` before a run never sweeps run state in."""
+        line = "projects/*/executions/"
         gi = Path(root) / ".gitignore"
         existing = gi.read_text(encoding="utf-8") if gi.exists() else ""
         if line in existing.splitlines():
@@ -109,7 +111,7 @@ class StorageService:
 
         atomic_write_text(
             gi,
-            existing + prefix + "# Promptly execution worktrees\n" + line + "\n",
+            existing + prefix + "# Promptly execution runtime state\n" + line + "\n",
         )
 
     # ── Metadata collections ──────────────────────────────────────────────────

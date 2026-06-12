@@ -97,10 +97,14 @@ class ExecutionManager:
         self.storage.create_execution(root, project, execution_id, task_id)
         self.storage.ensure_gitignore(root)
 
+        # Commit the project's docs + pull the latest base so the worktree starts
+        # from the current, shared state (07).
+        base_branch = self._prepare_base(root, project)
+
         wt = str(paths.worktree_path(root, project, execution_id))
         from ..storage.slug import slugify
         branch = worktree.branch_name(slugify(task.name), execution_id)
-        base_sha = worktree.add_worktree(root, wt, branch)
+        base_sha = worktree.add_worktree(root, wt, branch, base=base_branch)
         self.storage.set_execution_meta(
             root, project, execution_id, branch=branch, base_sha=base_sha
         )
@@ -228,6 +232,39 @@ class ExecutionManager:
         self.storage.set_status(root, project, task_id, TaskStatus.in_review)
         self.publish_progress(execution_id, "status", state)
 
+    # ── Base sync (07) ─────────────────────────────────────────────────────────
+
+    def _prepare_base(self, root: str, project: str) -> str:
+        """Commit the project's docs, then pull (+push) the base branch so the next
+        worktree op starts from the current shared state. Returns the base branch."""
+        from ..storage.slug import slugify
+
+        worktree.commit_paths(
+            root, [f"projects/{slugify(project)}"], f"Promptly: update {project} docs")
+        branch = worktree.current_branch(root)
+        worktree.pull_base(root, branch)
+        worktree.push_base(root, branch)
+        return branch
+
+    def _sync_for_resume(self, root: str, project: str, execution_id: str) -> str:
+        """Pull the latest base and merge it into the worktree before resuming. If
+        the merge conflicts, return an instruction telling the build session to
+        resolve them first; otherwise return an empty string."""
+        branch = self._prepare_base(root, project)
+        wt = str(paths.worktree_path(root, project, execution_id))
+        result = worktree.sync_worktree(wt, branch)
+        if not result["conflicts"]:
+            return ""
+        files = ", ".join(result["conflicts"])
+        return (
+            "NOTE: the base branch advanced and merging it into your worktree produced "
+            f"merge conflicts in: {files}. These files contain Git conflict markers "
+            "(<<<<<<< / ======= / >>>>>>>). First resolve EVERY conflict sensibly "
+            "(preserve both the base changes and your task's changes), then run "
+            "`git add` on the resolved files and `git commit --no-edit` to finish the "
+            "merge. Only then continue with the request below.\n\n"
+        )
+
     # ── Resume paths ─────────────────────────────────────────────────────────────
 
     async def answer(
@@ -238,7 +275,8 @@ class ExecutionManager:
         if prog is None:
             raise NotFoundError(f"execution {execution_id} not found")
         _, q = self.storage.answer_question(root, project, execution_id, question_id, answer)
-        prompt = (
+        sync = self._sync_for_resume(root, project, execution_id)
+        prompt = sync + (
             "The user answered your question.\n\n"
             f"Question: {q.question}\nAnswer: {answer}\n\nContinue building the task."
         )
@@ -255,13 +293,14 @@ class ExecutionManager:
             raise NotFoundError(f"execution {execution_id} not found")
         _, pr = self.storage.decide_permission(
             root, project, execution_id, request_id, decision)
+        sync = self._sync_for_resume(root, project, execution_id)
         if decision == "allow":
-            prompt = (
+            prompt = sync + (
                 f"The user approved your request to use {pr.tool}. "
                 "Retry that action and continue building the task."
             )
         else:
-            prompt = (
+            prompt = sync + (
                 f"The user denied your request to use {pr.tool}. Do not attempt it "
                 "again; find another approach, or call ask_question if you are stuck. "
                 "Continue."
@@ -279,7 +318,8 @@ class ExecutionManager:
         # Back to in_progress; the done marker no longer applies.
         self.storage.set_done_summary(root, project, execution_id, "")
         self.storage.set_status(root, project, prog.task_id, TaskStatus.in_progress)
-        prompt = (
+        sync = self._sync_for_resume(root, project, execution_id)
+        prompt = sync + (
             "The user reviewed your work and left feedback:\n\n"
             f"{message}\n\nAddress it, then call report_done again when finished."
         )

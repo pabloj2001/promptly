@@ -35,16 +35,22 @@ tracks the run loop.
 
 ## Starting an execution (`POST /executions {taskId}`)
 1. Generate `executionId` (uuid). Create `executions/<id>/`.
-2. **Worktree:** create a branch (`promptly/<task-slug>-<short-id>`) and a worktree at
-   `executions/<id>/worktree/` from the root repo:
-   `git -C <root> worktree add -b <branch> <execdir>/worktree HEAD`.
-3. **Gitignore:** ensure the root `.gitignore` ignores
-   `projects/*/executions/*/worktree/` (idempotent — only append if missing). Done once at
-   project creation (02) and re-checked here.
-4. Write initial `progress.json` (`status: running`, empty steps/questions, `sessionId: null`).
-5. Link both ways: set `task.executionId = id` and `task.status = in_progress`;
+2. **Gitignore:** ensure the root `.gitignore` ignores `projects/*/executions/` — the whole
+   execution tree is local-only runtime state (worktrees + progress/comments), so committing
+   the project's docs never sweeps it in. Idempotent. Done at project creation (02) too.
+3. **Prepare the base** (so the worktree starts from current, shared state — runs on *every*
+   start and resume): commit the project's docs (`git add -- projects/<name>` + commit; only
+   `project.md`/`docs/`/`tasks/` are versioned), then **pull** the base branch fast-forward
+   from its upstream if one exists ("check for new changes to pull"), then **push** the base
+   if a remote exists. All best-effort — no remote ⇒ local-only.
+4. **Worktree:** create a branch (`promptly/<task-slug>-<short-id>`) and a worktree at
+   `executions/<id>/worktree/` off the **current branch**'s freshly-updated HEAD:
+   `git -C <root> worktree add -b <branch> <execdir>/worktree <base-branch>`. The worktree is
+   a checkout, so it already contains the committed project docs + the codebase.
+5. Write initial `progress.json` (`status: running`, `branch`, `baseSha`, `sessionId: null`).
+6. Link both ways: set `task.executionId = id` and `task.status = in_progress`;
    `progress.taskId = id`.
-6. Kick off the **run loop** (background task) and return `executionId` immediately so the
+7. Kick off the **run loop** (background task) and return `executionId` immediately so the
    UI can subscribe to the stream.
 
 ## The run loop
@@ -55,11 +61,12 @@ the **execution** permissions profile compiled into `--settings`/`--permission-m
 registered, all bound to this `executionId` via env. ExecutionManager owns the subprocess
 (in a registry) so it can kill it; it drains `stream-json` only to capture the `session_id`
 from the init event (progress itself comes from the MCP tools, not text parsing).
-- **Prompt:** rendered from `execute_task.md.j2` (09). Claude is told to **read first** —
-  the task spec, the project spec, its dependencies' specs, `CLAUDE.md`, and the relevant
-  source (it has whole-repo read access via the execution profile) — then plan via
-  `plan_steps`, keep steps updated via `update_step`/`add_step`, ask via `ask_question` when
-  blocked, and call `report_done` when finished. It may only **write** inside the worktree.
+- **Prompt:** rendered from `execute_task.md.j2` (09). The **task spec is inlined** (Claude
+  must have it verbatim); the project spec, sibling specs, `CLAUDE.md`, and source are read by
+  path **from the worktree's own checkout** (reads are confined to the worktree — see
+  Permissions). Claude plans via `plan_steps`, keeps steps updated via `update_step`/`add_step`,
+  asks via `ask_question` when blocked, and calls `report_done` when finished. It may only
+  **write** inside the worktree.
 - **Progress writes come from the MCP tools**, not from parsing model text: each tool call
   mutates this execution's `progress.json` (via StorageService, locked atomic write) and
   publishes an event to the SSE bus. This is why MCP is preferred over Claude editing JSON.
@@ -77,7 +84,13 @@ from the init event (progress itself comes from the MCP tools, not text parsing)
   a non-zero exit fails.
 
 ## Mid-run interactions (resume the session)
-All use `--resume <sessionId>` (03):
+All use `--resume <sessionId>` (03). **Before every resume, re-sync the base** (an execution
+can sit `awaiting_input`/`in_review` long enough for the repo + docs to move on): re-run the
+*prepare-the-base* step (commit docs, pull, push), then in the worktree `stash` → `merge` the
+updated base → `stash pop`. If the merge/pop **conflicts**, prepend an instruction to the
+resume prompt telling the build session to resolve the conflict markers, `git add` + `git
+commit --no-edit` the merge, *then* carry on — it has worktree write + bash, so it fixes them
+inline. If the base hasn't moved, this is a no-op.
 - **Answer a question** (`POST /executions/{id}/answer`): record the answer on the pending
   question, resume the session delivering the answer, set `progress.status` back to
   `running`. Claude continues; updates flow as before.
@@ -117,10 +130,12 @@ CLI `--settings`/`--permission-mode`/`--add-dir` ([09](./09-prompts-and-permissi
 
 **Default: `auto` mode (unattended) with explicit read/write scoping.** Executions run in
 `auto` permission mode — no approval prompts — but with explicit boundaries:
-- **Read scope:** the project's living `docs/` and `tasks/` dirs (via `--add-dir`) plus the
-  worktree (`cwd`). NOT the whole repo. The codebase Claude builds against is the worktree
-  checkout; the project spec is inlined into the prompt. Extra read dirs via
-  `additionalReadDirs`.
+- **Read scope:** the **worktree only** (`cwd`) — no `--add-dir` of the repo/project/`docs`/
+  `tasks` at all. The worktree is a checkout that already contains the codebase **and** the
+  committed project docs (`project.md`, `docs/`, `tasks/` — committed by the prepare-base step
+  just before the run), so everything is readable from within it; `executions/` is never
+  exposed. The **task spec is inlined** into the prompt; the project spec + sibling specs are
+  read by path from the worktree's own copies. Users can widen with `additionalReadDirs`.
 - **Write scope:** the worktree only. The **PreToolUse hook** hard-denies edits whose path is
   outside the worktree (verified: the hook's deny is honored even under `auto`). Bash runs
   unattended in the worktree (`cwd`); it isn't path-gated (OS-level bash sandboxing is out of

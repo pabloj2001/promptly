@@ -108,11 +108,14 @@ declares two **profiles** (Promptly compiles each into the flags/settings for a 
   writes denied. Claude reads `CLAUDE.md`/spec/tasks/source, returns the document; *we* write
   the file.
 - **execution** (Mode B, 07): `cwd = worktree`, runs **unattended in `auto` mode** (no prompts)
-  but **explicitly scoped**: reads limited to the project's `docs/` + `tasks/` (`--add-dir`)
-  plus the worktree; writes limited to the worktree by the PreToolUse hook (hard-denies edits
-  outside it — verified honored under `auto`). Bash runs in the worktree. The worktree
-  isolates changes until a PR. `askFallback: true` routes out-of-scope writes to the user
-  instead of denying; `bypassPermissions` drops the hook for fully unscoped access. A future
+  but **explicitly scoped**: reads confined to the **worktree only** (no `--add-dir`) — the
+  worktree is a checkout containing the codebase + the committed project docs, so nothing
+  outside it is exposed (no whole-repo, no `executions/`). Writes limited to the worktree by
+  the PreToolUse hook (hard-denies edits outside it — verified honored under `auto`). The task
+  spec is inlined; the project spec + sibling specs are read by path from the worktree. Bash
+  runs in the worktree. `askFallback: true` routes out-of-scope writes to the user instead of
+  denying; `bypassPermissions` drops the hook. The execution engine commits the project docs +
+  pulls the base before every run/resume so the worktree reflects current state (07). A future
   per-command **whitelist/blacklist** plugs into the hook + allow/deny rules.
 - The user can edit this file to tighten or widen access (mode, `allow`/`deny`,
   `additionalReadDirs`). Promptly reads it per call; missing file → sensible defaults above.
