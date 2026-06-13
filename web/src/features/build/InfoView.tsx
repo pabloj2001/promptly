@@ -253,7 +253,7 @@ function RunBody({
         </div>
       )}
 
-      <Steps steps={progress.steps} planning={running} />
+      <Steps steps={progress.steps} planning={running} errored={failed} />
 
       {awaiting && openPermissions.length > 0 && (
         <Permissions executionId={executionId} requests={openPermissions} />
@@ -269,7 +269,15 @@ function RunBody({
   );
 }
 
-function Steps({ steps, planning }: { steps: Step[]; planning?: boolean }) {
+function Steps({
+  steps,
+  planning,
+  errored,
+}: {
+  steps: Step[];
+  planning?: boolean;
+  errored?: boolean;
+}) {
   if (!steps.length)
     return (
       <p className="flex items-center gap-2 text-sm text-slate-400">
@@ -287,8 +295,22 @@ function Steps({ steps, planning }: { steps: Step[]; planning?: boolean }) {
       <ol className="space-y-1">
         {steps.map((s) => (
           <li key={s.id} className="flex items-start gap-2 text-sm">
-            <span className="mt-0.5 w-4 text-center text-slate-500">
-              {s.status === "in_progress" ? <Spinner className="text-blue-500" /> : icon(s.status)}
+            <span
+              className={`mt-0.5 w-4 text-center ${
+                errored && s.status === "in_progress"
+                  ? "font-semibold text-red-500"
+                  : "text-slate-500"
+              }`}
+            >
+              {s.status === "in_progress" ? (
+                errored ? (
+                  "✕"
+                ) : (
+                  <Spinner className="text-blue-500" />
+                )
+              ) : (
+                icon(s.status)
+              )}
             </span>
             <span className="flex-1">
               <span
