@@ -241,6 +241,38 @@ def test_internal_steps_and_question(storage, root, engine, monkeypatch):
     assert ans.answer == "postgres"
 
 
+def test_complete_step_fuzzy_and_fallback(storage, root):
+    """step_complete must not silently drop a completion when the title doesn't match
+    byte-for-byte: it matches fuzzily, and falls back to the active step otherwise."""
+    storage.create_project("Demo", root)
+    storage.create_execution(root, "Demo", "ef", "tf")
+    storage.seed_steps(root, "Demo", "ef",
+                       [{"title": "Read the spec"}, {"title": "Write the code"},
+                        {"title": "Add tests"}])
+
+    # Fuzzy: numbered prefix + trailing period + casing differences still match.
+    s = storage.complete_step(root, "Demo", "ef", title="1. read the spec.")
+    assert s.steps[0].status == "done"
+    assert s.steps[1].status == "in_progress"
+
+    # Fallback: an unrecognizable title completes the current active step, not nothing.
+    s = storage.complete_step(root, "Demo", "ef", title="(some unrelated phrasing)")
+    assert s.steps[1].status == "done"
+    assert s.steps[2].status == "in_progress"
+
+
+def test_revise_steps_preserves_done_when_flag_omitted(storage, root):
+    storage.create_project("Demo", root)
+    storage.create_execution(root, "Demo", "er", "tr")
+    storage.seed_steps(root, "Demo", "er", [{"title": "a"}, {"title": "b"}])
+    storage.complete_step(root, "Demo", "er", title="a")
+    # Revise without restating done on the already-done step "a" -> stays done.
+    s = storage.revise_steps(root, "Demo", "er",
+                             [{"title": "a"}, {"title": "b"}, {"title": "c"}])
+    assert s.steps[0].status == "done"
+    assert s.steps[1].status == "in_progress"
+
+
 def test_internal_endpoints_require_token(storage, root):
     from fastapi.testclient import TestClient
 

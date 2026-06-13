@@ -6,6 +6,7 @@ Pure-ish: paths in, data out, no network. All metadata writes are atomic + locke
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,16 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+def _norm_title(t: str) -> str:
+    """Normalize a step title for fuzzy matching: lowercase, drop a leading
+    number/"Step N" prefix, collapse whitespace, drop trailing punctuation. The AI
+    rarely echoes a step title byte-for-byte, so exact matching loses completions."""
+    t = (t or "").strip().lower()
+    t = re.sub(r"^(step\s*)?\d+\s*[\.\):\-]\s*", "", t)  # "1." / "2)" / "Step 3:" …
+    t = re.sub(r"\s+", " ", t)
+    return t.strip().rstrip(".")
+
+
 def _find_step(
     steps: list[Step], step_id: Optional[str], title: Optional[str]
 ) -> Optional[Step]:
@@ -61,6 +72,12 @@ def _find_step(
     for st in steps:
         if title and st.title == title:
             return st
+    # Fuzzy fallback: titles rarely round-trip exactly through the model.
+    if title:
+        want = _norm_title(title)
+        for st in steps:
+            if _norm_title(st.title) == want:
+                return st
     return None
 
 
@@ -667,6 +684,19 @@ class StorageService:
         to in_progress (07)."""
         def fn(s: ProgressState) -> None:
             match = _find_step(s.steps, step_id, title)
+            if match is None:
+                # The protocol is strictly one step at a time, so a step_complete with
+                # no resolvable title almost always means "the step I was working on."
+                # Fall back to the active step (else the first not-yet-done step) so a
+                # title mismatch never silently drops a completion.
+                match = next(
+                    (st for st in s.steps if st.status == StepStatus.in_progress.value),
+                    None,
+                ) or next(
+                    (st for st in s.steps
+                     if st.status not in (StepStatus.done.value, StepStatus.skipped.value)),
+                    None,
+                )
             if match is not None:
                 match.status = StepStatus.done.value
                 match.finished_at = _now()
@@ -681,13 +711,18 @@ class StorageService:
         their ids/timestamps. The first not-done step is set in_progress."""
         def fn(s: ProgressState) -> None:
             prev = {st.title: st for st in s.steps}
+            prev_norm = {_norm_title(st.title): st for st in s.steps}
             rebuilt: list[Step] = []
             for item in steps:
                 title = item.get("title")
                 if not title:
                     continue
-                old = prev.get(title)
-                done = bool(item.get("done"))
+                old = prev.get(title) or prev_norm.get(_norm_title(title))
+                # `done` is optional in the schema; when the model omits it, preserve a
+                # previously-completed step's done state rather than resetting it.
+                flag = item.get("done")
+                done = bool(flag) if flag is not None else (
+                    old is not None and old.status == StepStatus.done.value)
                 rebuilt.append(Step(
                     id=old.id if old else _new_id(),
                     title=title,
