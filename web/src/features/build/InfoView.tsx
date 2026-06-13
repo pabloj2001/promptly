@@ -6,6 +6,7 @@ import {
   useCreatePr,
   useDecidePermission,
   useExecution,
+  useExecutionMonitor,
   useSendFeedback,
   useStartExecution,
   useTasks,
@@ -26,6 +27,9 @@ export function InfoView({ task }: { task: MetadataEntry }) {
   const executionId = task.executionId ?? null;
   useExecutionStream(executionId);
   const { data: progress } = useExecution(executionId);
+  // Safety net: SSE only pushes on events, so a silently-dead run would look stuck.
+  // While running, poll the backend (on visit + interval) to detect death and resume.
+  useExecutionMonitor(executionId, progress?.status === "running");
   const start = useStartExecution();
 
   return (
