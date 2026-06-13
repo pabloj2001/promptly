@@ -32,6 +32,11 @@ from .exec_protocol import (
     read_transcript_command,
 )
 
+# StreamReader flow-control buffer for the build subprocess. We split lines ourselves
+# (see drain_stdout) so this only governs throughput, not a hard per-line cap — but a
+# generous value avoids needless transport pauses on big stream-json events.
+_STREAM_LIMIT = 16 * 1024 * 1024  # 16 MiB
+
 
 class SSEBus:
     """In-memory pub/sub keyed by execution id. Each subscriber gets its own
@@ -270,6 +275,7 @@ class ExecutionManager:
         proc = await asyncio.create_subprocess_exec(
             *spec.args, cwd=spec.cwd, env=spec.env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            limit=_STREAM_LIMIT,
         )
         self._procs[execution_id] = proc
 
@@ -293,15 +299,32 @@ class ExecutionManager:
                     captured["command"] = cmd
 
         async def drain_stdout() -> None:
+            # Read raw chunks and split on newlines ourselves: a single stream-json
+            # line can carry a large tool result / file content and blow past asyncio's
+            # readline() length cap ("Separator is not found, and chunk exceeded the
+            # limit"). Chunked read(n) has no such cap, so lines can be any size.
             assert proc.stdout is not None
-            async for raw in proc.stdout:
+            buf = bytearray()
+
+            def flush(raw: bytes) -> None:
                 line = raw.decode(errors="replace").strip()
                 if not line:
-                    continue
+                    return
                 try:
                     on_event(json.loads(line))
                 except json.JSONDecodeError:
-                    continue
+                    pass
+
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                while (nl := buf.find(b"\n")) >= 0:
+                    flush(bytes(buf[:nl]))
+                    del buf[: nl + 1]
+            if buf:
+                flush(bytes(buf))
 
         async def drain_stderr() -> None:
             assert proc.stderr is not None

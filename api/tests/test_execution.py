@@ -304,6 +304,42 @@ async def test_run_loop_completes_and_commits(storage, root, tmp_path, monkeypat
     assert refreshed.status == TaskStatus.in_review.value
 
 
+async def test_run_loop_handles_oversized_line(storage, root, tmp_path):
+    """A single stream-json line larger than asyncio's default readline cap (64 KiB)
+    must not crash the turn (regression: 'Separator is not found, chunk exceeded')."""
+    _seed_repo(root)
+    storage.create_project("Demo", root)
+    task = storage.create_entry(root, "Demo", type="task", display_name="Big")
+    storage.create_execution(root, "Demo", "e5", task.id)
+    from api.storage import paths
+    wt = str(paths.worktree_path(root, "Demo", "e5"))
+    base = worktree.add_worktree(root, wt, worktree.branch_name("big", "e5"))
+    storage.set_execution_meta(root, "Demo", "e5", base_sha=base)
+
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    # ~200 KB assistant text line, then the done command.
+    fake = (
+        "import json; "
+        "print(json.dumps({'type':'assistant','session_id':'sess-big',"
+        "'message':{'content':[{'type':'text','text':'A'*200000}]}})); "
+        "print(json.dumps({'type':'result','session_id':'sess-big',"
+        "'structured_output':{'type':'done','summary':'ok'}}))"
+    )
+
+    class FakeClaude:
+        def build_run_command(self, root, project, *, execution_id, worktree,
+                              prompt, session_id=None, granted=None):
+            return RunSpec(args=[sys.executable, "-c", fake],
+                           env=dict(__import__("os").environ), cwd=worktree)
+
+    em.claude = FakeClaude()
+    await em._run(root, "Demo", "e5", task.id, "prompt")
+
+    prog = storage.read_progress(root, "Demo", "e5")
+    assert prog.status == ProgressStatus.completed.value
+    assert prog.session_id == "sess-big"
+
+
 async def test_run_loop_failure(storage, root, tmp_path):
     storage.create_project("Demo", root)
     storage.create_execution(root, "Demo", "e4", "t4")
