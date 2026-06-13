@@ -232,6 +232,13 @@ class ChatHistory(CamelModel):
 # ── Per-project permissions config (09) ───────────────────────────────────────
 
 
+class ProjectSettings(CamelModel):
+    """Per-project preferences. ``instructions`` are default directions appended to
+    every build/plan prompt (e.g. "always run `npm run build` before reporting done")."""
+
+    instructions: str = ""
+
+
 class PermissionProfile(CamelModel):
     permission_mode: str = "default"
     allow: list[str] = Field(default_factory=list)

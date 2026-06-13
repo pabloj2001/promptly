@@ -192,6 +192,13 @@ def test_permissions_config_defaults_and_update(client, proj):
     assert client.get("/permissions", params=q(proj)).json()["additionalReadDirs"] == ["/extra"]
 
 
+def test_settings_defaults_and_update(client, proj):
+    assert client.get("/settings", params=q(proj)).json() == {"instructions": ""}
+    r = client.put("/settings", params=q(proj), json={"instructions": "run the build"})
+    assert r.status_code == 200
+    assert client.get("/settings", params=q(proj)).json()["instructions"] == "run the build"
+
+
 def test_create_project_spec_and_flag(client, proj):
     client.post("/docs", params=q(proj),
                 json={"prompt": "the spec", "type": "project_spec", "name": "Spec"})

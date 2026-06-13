@@ -8,9 +8,27 @@ import {
 } from "@tanstack/react-query";
 import { api, type Collection } from "./api";
 import { useUiStore } from "../store";
-import type { CommentAnchor, DocType, TaskStatus } from "./types";
+import type { CommentAnchor, DocType, ProjectSettings, TaskStatus } from "./types";
 
 const useProject = () => useUiStore((s) => s.activeProject);
+
+export function useSettings() {
+  const project = useProject();
+  return useQuery({
+    queryKey: ["settings", project],
+    queryFn: api.getSettings,
+    enabled: !!project,
+  });
+}
+
+export function useSaveSettings() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: (settings: ProjectSettings) => api.putSettings(settings),
+    onSuccess: (data) => qc.setQueryData(["settings", project], data),
+  });
+}
 
 export function useProjects() {
   return useQuery({ queryKey: ["projects"], queryFn: api.listProjects });

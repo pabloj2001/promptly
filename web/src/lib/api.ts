@@ -17,6 +17,7 @@ import type {
   MetadataEntry,
   PermissionsConfig,
   ProgressState,
+  ProjectSettings,
   ProjectDescriptor,
   RelatedPR,
   TaskStatus,
@@ -182,6 +183,13 @@ export const api = {
       method: "POST",
       scoped: true,
       body: { message },
+    }),
+  getSettings: () => request<ProjectSettings>("/settings", { scoped: true }),
+  putSettings: (settings: ProjectSettings) =>
+    request<ProjectSettings>("/settings", {
+      method: "PUT",
+      scoped: true,
+      body: settings,
     }),
   getPermissions: () => request<PermissionsConfig>("/permissions", { scoped: true }),
   putPermissions: (config: PermissionsConfig) =>

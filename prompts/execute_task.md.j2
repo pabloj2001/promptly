@@ -1,4 +1,4 @@
-{# vars: project_name, task_name, task_spec, steps[], project_spec_path, docs_dir, tasks_dir, worktree, dependency_names[] #}
+{# vars: project_name, task_name, task_spec, steps[], project_spec_path, docs_dir, tasks_dir, worktree, dependency_names[], instructions #}
 You are an autonomous software engineer building one task for the project
 "{{ project_name }}".
 
@@ -18,7 +18,13 @@ Also read any `CLAUDE.md` and the actual source in your worktree before changing
 ## Your task
 
 {{ task_spec }}
+{% if instructions %}
+## Project conventions (apply to every task in this project)
 
+{{ instructions }}
+
+Follow these throughout, and make sure they are satisfied before you report `done`.
+{% endif %}
 ## Your plan (work it one step at a time, in order)
 
 {% for s in steps %}{{ loop.index }}. {{ s.title }}{% if s.detail %} — {{ s.detail }}{% endif %}

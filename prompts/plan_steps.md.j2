@@ -1,4 +1,4 @@
-{# vars: project_name, project_path, repo_root, task_name, task_spec, dependency_names[] #}
+{# vars: project_name, project_path, repo_root, task_name, task_spec, dependency_names[], instructions #}
 {% import "_shared.md.j2" as s -%}
 You are planning the execution of a single task for the software project
 "{{ project_name }}". Your job is **only to break the task into an ordered list of concrete
@@ -13,7 +13,14 @@ This task depends on these other tasks (read their specs for context): {% for d 
 ## The task spec
 
 {{ task_spec }}
+{% if instructions %}
+## Project conventions (apply to every task in this project)
 
+{{ instructions }}
+
+Factor these into the plan — e.g. if they require running a build or test suite before a task
+is considered finished, include that as an explicit final step.
+{% endif %}
 ## What to produce
 
 Break this task into a concise, ordered list of **actionable steps** the engineer will work

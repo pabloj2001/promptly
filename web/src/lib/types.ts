@@ -73,6 +73,11 @@ export interface PermissionProfile {
   askFallback: boolean;
 }
 
+export interface ProjectSettings {
+  // Default directions appended to every build/plan prompt for this project.
+  instructions: string;
+}
+
 export interface PermissionsConfig {
   version: number;
   additionalReadDirs: string[];

@@ -18,6 +18,7 @@ from .routers import (
     operations,
     permissions,
     projects,
+    settings,
     tasks,
 )
 from .storage import StorageError
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(executions.router)
     app.include_router(operations.router)
     app.include_router(permissions.router)
+    app.include_router(settings.router)
     app.include_router(internal.router)
 
     @app.get("/health")

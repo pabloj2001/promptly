@@ -25,6 +25,7 @@ from ..models import (
     Operation,
     PermissionRequest,
     PermissionsConfig,
+    ProjectSettings,
     ProgressState,
     ProgressStatus,
     ProjectDescriptor,
@@ -376,6 +377,20 @@ class StorageService:
             paths.permissions_path(root, name), config.model_dump(by_alias=True)
         )
         return config
+
+    # ── Project settings (default build instructions) ─────────────────────────────
+
+    def read_settings(self, root: str, name: str) -> ProjectSettings:
+        raw = read_json(paths.settings_path(root, name))
+        return ProjectSettings.model_validate(raw) if raw else ProjectSettings()
+
+    def write_settings(
+        self, root: str, name: str, settings: ProjectSettings
+    ) -> ProjectSettings:
+        write_json(
+            paths.settings_path(root, name), settings.model_dump(by_alias=True)
+        )
+        return settings
 
     # ── Async operations (03/05) ──────────────────────────────────────────────────
 

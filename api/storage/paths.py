@@ -30,6 +30,10 @@ def permissions_path(root: str, name: str) -> Path:
     return project_dir(root, name) / "permissions.json"
 
 
+def settings_path(root: str, name: str) -> Path:
+    return project_dir(root, name) / "settings.json"
+
+
 def docs_dir(root: str, name: str) -> Path:
     return project_dir(root, name) / "docs"
 

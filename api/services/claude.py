@@ -271,6 +271,7 @@ class ClaudeService:
             task_name=task_name,
             task_spec=task_spec,
             dependency_names=dependency_names,
+            instructions=self.storage.read_settings(root, project).instructions,
         )
         result = await self._invoke_structured(
             rendered, schema=PLAN_SCHEMA, on_event=on_event,
@@ -311,6 +312,7 @@ class ClaudeService:
             tasks_dir=str(proj_in_wt / "tasks"),
             worktree=worktree,
             dependency_names=dependency_names,
+            instructions=self.storage.read_settings(root, project).instructions,
         )
 
     def build_run_command(

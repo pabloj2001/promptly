@@ -73,6 +73,13 @@ doing while planning). The steps are seeded into `progress.steps`
 follows is given this plan inlined in its prompt — it does **not** re-plan. (If planning
 fails, the execution is marked `failed` before any worktree session starts.)
 
+**Project instructions.** Both the planning prompt and the build prompt include the per-project
+**default instructions** from `settings.json` (`ProjectSettings.instructions`, edited via the
+header gear → `GET`/`PUT /settings`) — directions the AI must follow for *every* task in the
+project (e.g. "run `npm run build` and the test suite before reporting done", "match the existing
+code style"). The planner is told to fold them into the step list; the build session is told to
+satisfy them before it may report `done`.
+
 ## The run loop (turn-based)
 `ExecutionManager._run` loops: each iteration spawns one build turn via
 `ClaudeService.build_run_command()` (03) — `cwd = worktree/`, `--output-format stream-json`,
