@@ -203,5 +203,14 @@ allow/deny rules.
 - **Helper ↔ Promptly channel:** localhost internal HTTP API, token-guarded. uvicorn is the
   single writer of `progress.json` and owns SSE + the kill.
 - **PR tooling:** `gh` CLI (reuses the user's GitHub auth).
-- **Server restart:** in-flight executions die with the server; on startup we flip any
-  `running`/`awaiting_input` execution to `failed` so the user can retry.
+- **Liveness monitor + auto-resume:** in-flight runs die with the server (or if a build
+  process is killed without finalizing). We track which executions have a live/starting run in
+  an in-memory `_active` set (maintained synchronously, since `_procs` is only populated after
+  the subprocess spawns and planning has no process). The client polls
+  `POST /executions/{id}/ensure-running` **on visit and on an interval** while a run shows
+  `running`; if the execution is `running` but not in `_active`, the run is dead → we
+  **resume the session (`--resume`) and tell it to continue**. If there's no `session_id` to
+  resume, the execution is marked `failed`. A session that's gone surfaces via the normal
+  failure path (the resumed `claude --resume` exits non-zero → `_finalize` records the error →
+  failed banner). We no longer fail orphaned `running` executions on startup — they're
+  recovered on demand; `awaiting_input` stays paused for the user.

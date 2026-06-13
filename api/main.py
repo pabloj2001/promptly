@@ -25,10 +25,10 @@ from .storage import StorageError
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    # In-flight runs die with the server; flip them to failed so users can retry.
-    from .deps import get_execution
-
-    get_execution().mark_orphans_failed()
+    # In-flight runs die with the server, but we don't fail them here: a `running`
+    # execution with no live process is recovered on demand by ExecutionManager
+    # .ensure_running (the client polls it on visit + interval), which resumes the
+    # session and continues.
     yield
 
 

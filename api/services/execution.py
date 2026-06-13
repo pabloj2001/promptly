@@ -64,6 +64,11 @@ class ExecutionManager:
         self._procs: dict[str, asyncio.subprocess.Process] = {}
         self._interrupt: dict[str, str] = {}
         self._tasks: set[asyncio.Task] = set()
+        # Execution ids with a live OR starting run. Maintained synchronously (before
+        # the first await) so the liveness monitor can tell a genuinely-dead run apart
+        # from one that's mid-spawn. `_procs` alone has a gap: it's only populated after
+        # create_subprocess_exec, and planning (phase 1) has no process at all.
+        self._active: set[str] = set()
 
     # ── SSE helpers ──────────────────────────────────────────────────────────────
 
@@ -74,6 +79,19 @@ class ExecutionManager:
         task = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def _spawn_tracked(self, execution_id: str, coro) -> None:
+        """Spawn a top-level run coroutine, marking the execution active for the whole
+        of its lifetime (including any pre-process planning phase)."""
+        self._active.add(execution_id)
+
+        async def runner() -> None:
+            try:
+                await coro
+            finally:
+                self._active.discard(execution_id)
+
+        self._spawn(runner())
 
     def stop(self, execution_id: str, reason: str) -> None:
         """Record why and kill the running subprocess (called by internal callbacks
@@ -120,7 +138,7 @@ class ExecutionManager:
                 if (self.storage.read_metadata(root, project, "tasks").get(d))]
         # Plan first (separate MCP-free call), then run the build session. Done in a
         # spawned task so start() returns immediately; steps stream in over SSE.
-        self._spawn(self._plan_then_run(
+        self._spawn_tracked(execution_id, self._plan_then_run(
             root, project, execution_id, task_id, task.name, task.file, wt, deps))
         return self.storage.read_progress(root, project, execution_id)
 
@@ -309,8 +327,8 @@ class ExecutionManager:
             "The user answered your question.\n\n"
             f"Question: {q.question}\nAnswer: {answer}\n\nContinue building the task."
         )
-        self._spawn(self._run(root, project, execution_id, prog.task_id,
-                              prompt, session_id=prog.session_id))
+        self._spawn_tracked(execution_id, self._run(root, project, execution_id,
+                            prog.task_id, prompt, session_id=prog.session_id))
         return self.storage.read_progress(root, project, execution_id)
 
     async def decide_permission(
@@ -334,8 +352,8 @@ class ExecutionManager:
                 "again; find another approach, or call ask_question if you are stuck. "
                 "Continue."
             )
-        self._spawn(self._run(root, project, execution_id, prog.task_id,
-                              prompt, session_id=prog.session_id))
+        self._spawn_tracked(execution_id, self._run(root, project, execution_id,
+                            prog.task_id, prompt, session_id=prog.session_id))
         return self.storage.read_progress(root, project, execution_id)
 
     async def feedback(
@@ -352,8 +370,42 @@ class ExecutionManager:
             "The user reviewed your work and left feedback:\n\n"
             f"{message}\n\nAddress it, then call report_done again when finished."
         )
-        self._spawn(self._run(root, project, execution_id, prog.task_id,
-                              prompt, session_id=prog.session_id))
+        self._spawn_tracked(execution_id, self._run(root, project, execution_id,
+                            prog.task_id, prompt, session_id=prog.session_id))
+        return self.storage.read_progress(root, project, execution_id)
+
+    async def ensure_running(
+        self, root: str, project: str, execution_id: str
+    ) -> ProgressState:
+        """Liveness monitor + auto-recover (polled by the client on visit + interval).
+
+        If the execution is marked ``running`` but no run is actually live (its process
+        died without finalizing — e.g. the server restarted), resume it with the same
+        session id and tell it to continue. If there's no session to resume, mark it
+        failed. A session that's gone surfaces via the normal failure path: the resumed
+        ``claude --resume`` exits non-zero and ``_finalize`` records the error."""
+        prog = self.storage.read_progress(root, project, execution_id)
+        if prog is None:
+            raise NotFoundError(f"execution {execution_id} not found")
+        if prog.status != ProgressStatus.running.value or execution_id in self._active:
+            return prog  # alive, paused, or already terminal — nothing to do
+
+        if not prog.session_id:
+            state = self.storage.set_execution_status(
+                root, project, execution_id, ProgressStatus.failed,
+                error="the build process is no longer running and there is no session "
+                "to resume — start a new execution")
+            self.publish_progress(execution_id, "status", state)
+            return state
+
+        prompt = self._sync_for_resume(root, project, execution_id) + (
+            "The previous build session was interrupted before finishing. Continue "
+            "building the task from where you left off; call complete_step as you finish "
+            "each step and report_done once every step is complete."
+        )
+        self._spawn_tracked(execution_id, self._run(
+            root, project, execution_id, prog.task_id,
+            prompt, session_id=prog.session_id))
         return self.storage.read_progress(root, project, execution_id)
 
     async def cancel(self, root: str, project: str, execution_id: str) -> ProgressState:
@@ -402,18 +454,11 @@ class ExecutionManager:
         return worktree.diff(wt, prog.base_sha)
 
     # ── Startup recovery ─────────────────────────────────────────────────────────
-
-    def mark_orphans_failed(self) -> None:
-        """In-flight runs die with the server. On startup, flip any execution still
-        marked running/awaiting_input to failed so the user can retry (07 open Q)."""
-        live = {ProgressStatus.running.value, ProgressStatus.awaiting_input.value}
-        for proj in self.storage.list_projects():
-            for eid in self.storage.list_executions(proj.root, proj.name):
-                prog = self.storage.read_progress(proj.root, proj.name, eid)
-                if prog and prog.status in live:
-                    self.storage.set_execution_status(
-                        proj.root, proj.name, eid, ProgressStatus.failed,
-                        error="orphaned: server restarted while running")
+    #
+    # In-flight runs die with the server, but we no longer fail them on startup: a
+    # `running` execution whose process is gone is recovered on demand by
+    # `ensure_running` (the client polls it on visit + interval), which resumes the
+    # session and continues. `awaiting_input` executions stay paused for the user.
 
     # ── SSE stream ───────────────────────────────────────────────────────────────
 

@@ -301,6 +301,69 @@ async def test_permission_allow_resumes_with_grant(storage, root, monkeypatch):
     assert "approved" in captured["prompt"].lower()
 
 
+async def test_ensure_running_resumes_dead_session(storage, root, monkeypatch):
+    storage.create_project("Demo", root)
+    storage.create_execution(root, "Demo", "e8", "t8")
+    storage.set_execution_meta(root, "Demo", "e8", session_id="sess-D")
+    storage.set_execution_status(root, "Demo", "e8", ProgressStatus.running)
+
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    calls = {}
+
+    async def fake_run(root, project, eid, task_id, prompt, *, session_id=None):
+        calls.update(prompt=prompt, session_id=session_id, eid=eid)
+
+    monkeypatch.setattr(em, "_run", fake_run)
+    monkeypatch.setattr(em, "_sync_for_resume", lambda *a: "")
+    # running but nothing in _active -> the process is dead, resume it
+    await em.ensure_running(root, "Demo", "e8")
+    import asyncio
+    await asyncio.sleep(0)
+
+    assert calls["session_id"] == "sess-D"
+    assert calls["eid"] == "e8"
+    assert "continue" in calls["prompt"].lower()
+
+
+async def test_ensure_running_no_session_fails(storage, root, monkeypatch):
+    storage.create_project("Demo", root)
+    storage.create_execution(root, "Demo", "e9", "t9")
+    storage.set_execution_status(root, "Demo", "e9", ProgressStatus.running)
+
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    called = {"run": False}
+
+    async def fake_run(*a, **k):
+        called["run"] = True
+
+    monkeypatch.setattr(em, "_run", fake_run)
+    state = await em.ensure_running(root, "Demo", "e9")
+
+    assert called["run"] is False
+    assert state.status == ProgressStatus.failed.value
+    assert "no session" in (state.error or "").lower()
+
+
+async def test_ensure_running_noop_when_active(storage, root, monkeypatch):
+    storage.create_project("Demo", root)
+    storage.create_execution(root, "Demo", "e10", "t10")
+    storage.set_execution_meta(root, "Demo", "e10", session_id="sess-E")
+    storage.set_execution_status(root, "Demo", "e10", ProgressStatus.running)
+
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    em._active.add("e10")  # a run is already live/starting
+    called = {"run": False}
+
+    async def fake_run(*a, **k):
+        called["run"] = True
+
+    monkeypatch.setattr(em, "_run", fake_run)
+    state = await em.ensure_running(root, "Demo", "e10")
+
+    assert called["run"] is False
+    assert state.status == ProgressStatus.running.value
+
+
 # ── build_run_command shape (no CLI spawned) ─────────────────────────────────────
 
 
