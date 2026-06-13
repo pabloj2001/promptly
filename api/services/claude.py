@@ -41,6 +41,16 @@ _APP_ROOT = Path(__file__).resolve().parents[2]
 # Edit-family tool names the PreToolUse hook gates by path.
 _EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
+# The progress tools the build session calls back through (api/mcp_server.py). They
+# must be allow-listed so the CLI lets the model call them without an approval prompt
+# (under --permission-mode auto an un-allowed MCP call stalls in headless mode).
+_MCP_TOOLS = [
+    "mcp__promptly__complete_step",
+    "mcp__promptly__revise_steps",
+    "mcp__promptly__ask_question",
+    "mcp__promptly__report_done",
+]
+
 
 @dataclass
 class RunSpec:
@@ -337,8 +347,8 @@ class ClaudeService:
         ]
         for d in read_dirs:
             args += ["--add-dir", d]
-        if extra_tools:
-            args += ["--allowedTools", *extra_tools]
+        # Always allow the promptly progress tools; add any per-run granted edit tools.
+        args += ["--allowedTools", *_MCP_TOOLS, *extra_tools]
         if session_id:
             args += ["--resume", session_id]
         return RunSpec(args=args, env=env, cwd=worktree)

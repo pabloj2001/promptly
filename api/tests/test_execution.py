@@ -383,6 +383,13 @@ def test_build_run_command_scoped_default(storage, root):
     assert "--resume" in args and "sess-Z" in args
     assert "auto" in args  # unattended, no prompts
 
+    # The promptly progress tools must be allow-listed (otherwise an MCP call stalls
+    # waiting for approval that never comes in headless auto mode).
+    allowed = args[args.index("--allowedTools") + 1:]
+    for tool in ("mcp__promptly__complete_step", "mcp__promptly__revise_steps",
+                 "mcp__promptly__ask_question", "mcp__promptly__report_done"):
+        assert tool in allowed
+
     # read scope = the worktree (cwd) only — no --add-dir of repo/project/docs/tasks
     add_dirs = [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
     assert add_dirs == []
