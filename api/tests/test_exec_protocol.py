@@ -104,6 +104,15 @@ def test_handle_done_incomplete_returns_correction(storage, root):
     assert storage.read_progress(root, "Demo", "x1").status != ProgressStatus.completed.value
 
 
+def test_set_activity_truncates_and_collapses(storage, root):
+    storage.create_project("Demo", root)
+    storage.create_execution(root, "Demo", "act1", "t")
+    s = storage.set_activity(root, "Demo", "act1", "x" * 500)
+    assert len(s.activity) <= 200 and s.activity.endswith("…")
+    s = storage.set_activity(root, "Demo", "act1", "a\n\n   b\tc")
+    assert s.activity == "a b c"
+
+
 def test_set_error_flags_task(storage, root):
     em, tid = _em_with_exec(storage, root)
     em._set_error(root, "Demo", "x1", tid, "anthropic down")

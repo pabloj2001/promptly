@@ -39,6 +39,9 @@ from . import paths, registry
 from .atomic import read_json, write_json
 from .slug import dedupe_slug, slugify
 
+# Max length of the live activity line (truncated server-side).
+_ACTIVITY_MAX = 200
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -699,9 +702,14 @@ class StorageService:
     def set_activity(
         self, root: str, name: str, execution_id: str, activity: str
     ) -> ProgressState:
-        """Record the latest live line-of-thinking (compact, overwritten each event)."""
+        """Record the latest live line-of-thinking (compact, overwritten each event).
+        Truncated server-side so the wire payload + UI stay bounded regardless of source."""
+        text = " ".join((activity or "").split())  # collapse whitespace/newlines
+        if len(text) > _ACTIVITY_MAX:
+            text = text[: _ACTIVITY_MAX - 1].rstrip() + "…"
+
         def fn(s: ProgressState) -> None:
-            s.activity = activity
+            s.activity = text
         return self._mutate_progress(root, name, execution_id, fn)
 
     def answer_question(
