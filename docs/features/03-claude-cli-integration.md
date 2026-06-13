@@ -6,8 +6,9 @@
 
 All AI work goes through the **Claude CLI in headless mode**, spawned as a subprocess by
 the backend. This doc covers the two usage modes — **generation** (authoring/editing docs &
-tasks, doc chat, addressing comments) and **stateful sessions** (task execution) — plus the
-**MCP tool server** Claude calls back into to report progress.
+tasks, doc chat, addressing comments) and **stateful sessions** (task execution, a turn-based
+loop where Claude reports progress via a **`--json-schema` structured-output command** each
+turn — no MCP).
 
 > Flags below are **verified against CLI v2.1.173**. Notably: there is **no
 > `--permission-prompt-tool`** and **no `--max-turns`** in this version — earlier drafts
@@ -29,8 +30,10 @@ tasks, doc chat, addressing comments) and **stateful sessions** (task execution)
   mid-session without losing context).
 - `--resume <session-id>` — continue a prior session (key for execution + Q&A + feedback).
 - `--model <id>` — pin the model (default to the latest capable model, e.g. `claude-opus-4-8`).
-- `--mcp-config <json|file>` — register our MCP server (below).
-- `--allowedTools` / `--disallowedTools` — gate tools; e.g. allow `mcp__promptly__*` and
+- `--json-schema <schema>` — constrain a `-p` turn so its result carries a schema-valid
+  `structured_output` object. This is how the execution loop gets a reliable progress command
+  per turn (below) — replaces the old MCP progress server.
+- `--allowedTools` / `--disallowedTools` — gate tools; e.g. allow file/edit tools and
   file/edit tools during execution. (Most permission control comes from `--settings`, below.)
 - `--settings <json|file>` — supply a Claude `settings.json` with `permissions:{allow,deny,
   ask}`, `additionalDirectories`, `defaultMode`, and a `PreToolUse` hook. **This is how we
@@ -44,7 +47,7 @@ tasks, doc chat, addressing comments) and **stateful sessions** (task execution)
   so Claude can read any file for context, plus any `additionalReadDirs` from the project's
   `permissions.json` (09).
 - `--append-system-prompt` — inject the rendered Promptly system prompt (output contract, the
-  "read the repo first" instruction, and for execution how to call the MCP progress tools).
+  "read the repo first" instruction, and for execution how to return the progress commands).
 - Working directory = the subprocess `cwd`: the **repo root** for generation (so reads span
   the repo), the **worktree** for execution.
 
@@ -61,11 +64,12 @@ class ClaudeService:
         --output-format json`, returns {text, session_id, cost}. Pass
         session_id to continue a doc-chat conversation (--resume)."""
 
-    async def run_session(self, *, prompt, cwd, session_id=None, resume=False,
-                          mcp_config, settings, permission_mode, system=None,
-                          on_event) -> SessionResult:
-        """Stateful execution. Streams events to `on_event` (ExecutionManager
-        turns these into SSE + progress.json writes). Returns session_id+status."""
+    def build_run_command(self, root, project, *, execution_id, worktree,
+                          prompt, session_id=None, granted=None) -> RunSpec:
+        """Compile one build-session turn: `claude -p --json-schema <command schema>
+        --output-format stream-json` + settings/permission-mode/PreToolUse hook.
+        ExecutionManager spawns it, streams events (live activity), and reads the
+        turn's structured_output command (see api/services/exec_protocol.py)."""
 ```
 Implementation notes:
 - Spawn with `asyncio.create_subprocess_exec`. Generation uses `--output-format json` (one
@@ -126,43 +130,42 @@ loading state meanwhile (05).
 > `taskGroup`); the body is never modified. Reuses the operations SSE + `operation` running flag
 > like normal generation.
 
-## Mode B — stateful execution session
-Used by the Execution Engine ([07](./07-execution-engine.md)). The session:
-1. Starts in the execution's `worktree/` with the task spec + project context as the prompt.
-2. Has the **MCP server** registered so Claude reports steps/questions via tools.
-3. Persists its `session_id` into `progress.json` so later actions resume it:
-   - **Answer a question:** resume the session, deliver the user's answer.
-   - **Feedback (in_review → in_progress):** resume with the feedback text.
-   - **Review PR comments:** resume with the PR review comments.
+## Mode B — stateful execution session (turn-based, structured-output protocol)
+Used by the Execution Engine ([07](./07-execution-engine.md)). The build session is **not** a
+single long run and uses **no MCP server**. It's a backend-driven loop of `claude -p` **turns**,
+each constrained with **`--json-schema`** so its result carries one schema-validated
+**`structured_output`** command. Each turn runs in the execution's `worktree/`, does real work
+with the normal tools, and returns one command; the engine dispatches it and `--resume`s for the
+next turn. `session_id` is persisted to `progress.json` for resumes (answer / feedback / Try
+again / review PR comments).
 
-## The MCP tool server (Claude → Promptly callback)
-So Claude updates execution state through **typed tools** instead of editing
-`progress.json` directly (safer; can't corrupt the file or touch other tasks). Ship a small
-**stdio MCP server** (Python, same package) registered via `--mcp-config`.
+### The command protocol (Claude → Promptly)
+Instead of MCP tools, Claude reports progress by returning ONE command per turn. The step list
+is still **pre-planned** in a separate call before the loop starts (07). Commands (`type`
+required):
+| Command | Effect |
+|---------|--------|
+| `step_complete{title}` | Mark the named step `done`; next pending step auto-advances. |
+| `revise_steps{steps:[{title,detail?,done}]}` | Replace the **entire** plan; re-derive the active step. |
+| `question{question}` | Clarifying question → `awaiting_input` (loop pauses). |
+| `issue{issue,detail?}` | Blocker/error → `awaiting_input`, surfaced as a red blocker. |
+| `done{summary}` | Task complete → `in_review`. If any step is incomplete, the loop resumes with a correction instead. |
+| `thinking{text}` | Optional surfaced progress note; the loop continues. |
 
-The step list is **pre-planned** in a separate MCP-free call before the build session starts
-(07), so the build session doesn't declare its own plan — it works the given list. Tools
-exposed (namespace `promptly`):
-| Tool | Purpose |
-|------|---------|
-| `complete_step(title)` | Mark the named step `done`; the next pending step auto-advances to `in_progress`. |
-| `revise_steps(steps: [{title, detail?, done}])` | Replace the **entire** plan when steps must change; re-derives the active step. |
-| `ask_question(question) -> id` | Surface a clarifying question; execution enters `awaiting_input`. |
-| `report_done(summary)` | Signal task complete → status `in_review`. **Rejected if any step is still incomplete.** |
+We read the command from the live `stream-json` `result` event's `structured_output` (the same
+stream surfaces the live line-of-thinking as a compact `activity`). **Fallback:** if a turn's
+process is lost (e.g. server restart), the command is recovered from the session transcript
+(`~/.claude/projects/*/<session_id>.jsonl`, recorded as a `tool_use` named `StructuredOutput`).
+See `api/services/exec_protocol.py`.
 
-> **Permission approvals are NOT an MCP tool.** This CLI has no `--permission-prompt-tool`.
-> Out-of-scope execution actions are caught by a **`PreToolUse` hook** (09) that records a
-> pending permission request in `progress.json`, emits the SSE `permission` event, and blocks
-> until the user answers — see [07](./07-execution-engine.md).
+> **Permission approvals** stay a **`PreToolUse` hook** (09) — the one remaining internal
+> callback — which records a pending permission request, emits the SSE `permission` event, and
+> pauses the loop until the user answers (see [07](./07-execution-engine.md)).
 
-- The MCP server is bound to **one execution id** (passed via env/config when spawned) and
-  calls back into StorageService/ExecutionManager to mutate *only* that execution's
-  `progress.json`, then publishes the change to the SSE bus.
-- Register with `--mcp-config '{"mcpServers":{"promptly":{...}}}'` and
-  `--allowedTools mcp__promptly__*` (the file/edit tools come from the execution permissions
-  profile, 09).
-- Fallback (discouraged): instruct Claude to edit `progress.json` directly. Documented only
-  so reviewers know why MCP was chosen.
+> **Errors never auto-resume.** A turn that returns no valid command (Anthropic down,
+> connectivity, CLI crash) or a server restart marks the execution `failed` (keeping the
+> session), flags the task red, and the user resumes via **Try again** (`POST
+> /executions/{id}/resume`) — see [07](./07-execution-engine.md).
 
 ## Prompt assets
 Prompts are **Jinja2 templates in the top-level `prompts/` dir** (not `api/prompts/`, not
@@ -178,11 +181,12 @@ loader. ClaudeService renders a template and passes the result via `--append-sys
    parse + timeout.
 4. Wire async `POST /docs`, `POST /tasks`, `/address`, `/chat` as background operations (02)
    that publish to the operations SSE stream.
-5. `run_session()` (stream-json) with event callback + cancellation (07).
-6. MCP tool server (stdio) bound to an execution; the tools above + the `PreToolUse` approval
-   hook (07/09).
-7. Tests: stream-json parser fixtures; MCP tools mutate the right file + publish events;
-   generation produces valid metadata; chat resume continuity.
+5. `build_run_command()` (stream-json + `--json-schema`) + the ExecutionManager turn loop with
+   event callback + cancellation (07).
+6. `exec_protocol.py`: command schema + parse the turn's `structured_output` / transcript
+   fallback; the `PreToolUse` approval hook (07/09) is the only remaining internal callback.
+7. Tests: command parse + transcript fallback fixtures; `_handle_command` dispatch mutates the
+   right file + publishes events; generation produces valid metadata; chat resume continuity.
 
 ## Open questions
 - Structured metadata extraction with repo-reading enabled (multi-turn): instruct "read

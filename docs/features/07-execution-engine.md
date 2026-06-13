@@ -4,27 +4,34 @@
 [03 Claude CLI](./03-claude-cli-integration.md), [09 Prompts & Permissions](./09-prompts-and-permissions.md).
 **Blocks:** [08 Build Tab](./08-build-tab.md).
 
-The backend that runs a task: creates an isolated git worktree, spawns a stateful Claude
-session that builds the task and reports progress via MCP tools, persists everything to
-`executions/<execution-id>/`, and broadcasts live updates over SSE. This is the most complex
-backend piece — build it after the CLI wrapper (03) works for one-shot generation.
+The backend that runs a task: creates an isolated git worktree, drives a **backend-owned
+turn loop** of Claude build turns that report progress via a `--json-schema` **structured-output
+command** each turn (no MCP), persists everything to `executions/<execution-id>/`, and
+broadcasts live updates over SSE. This is the most complex backend piece — build it after the
+CLI wrapper (03) works for one-shot generation.
 
-**Interaction model — kill-and-resume (not blocking).** When the build session needs the
-user (a question or a permission request), we do **not** hold the process open waiting.
-A helper records the request into `progress.json`, we set `awaiting_input`, emit SSE, and
-**kill the subprocess**. When the user responds, we re-spawn with `--resume <sessionId>`
-(captured from the run's `stream-json` init event and persisted) — and for a *granted*
-permission we add the specific tool to `--allowedTools` so the retried action goes through.
-Because all state lives on disk, this survives a server restart. The MCP progress server
-and the `PreToolUse` hook run as child processes of `claude -p` and report back over
-Promptly's localhost **internal HTTP API** (token-guarded, `X-Promptly-Token`); uvicorn
-stays the single writer of `progress.json` and owns the kill/SSE control flow.
+**Turn loop, backend-driven.** Each turn is a `claude -p` process that does real work with its
+tools and returns ONE command (`step_complete` / `revise_steps` / `question` / `issue` / `done`
+/ `thinking`). The engine reads the command (from the turn's `structured_output`, or the session
+transcript as a fallback), applies it, and `--resume`s for the next turn. Because the loop lives
+in uvicorn — not the client — progress continues whether or not a Build tab is open.
+
+**Pauses are kill-and-resume.** A `question`/`issue` command pauses the loop (`awaiting_input`);
+a **permission request** (the one remaining child-process callback, from the `PreToolUse` hook)
+records into `progress.json` and **kills the turn**. The user's response re-spawns with
+`--resume <sessionId>` (and, for a *granted* permission, the tool added to `--allowedTools`).
+
+**Errors never auto-resume.** A turn that returns no valid command (Anthropic down,
+connectivity, CLI crash) or a server restart marks the execution `failed` with the message
+(keeping the session), flags the task so the Build sidebar shows it **red**, and the user
+resumes with **Try again** (`POST /executions/{id}/resume`). All state lives on disk, so this
+survives a server restart. uvicorn stays the single writer of `progress.json`.
 
 ## Lifecycle
 ```
-pending ──start──▶ in_progress ──report_done──▶ in_review
+pending ──start──▶ in_progress ──done cmd──▶ in_review
    ▲                   │  ▲                          │
-   │            ask_question │ answer          feedback│  create PR
+   │       question/issue │ answer          feedback│  create PR
    │                   ▼  │                          ▼
    │             awaiting_input               (PR created) ──review comments──▶ in_progress
    └──────────────────────────────────────────────────────────────────────────┘
@@ -54,51 +61,46 @@ tracks the run loop.
    UI can subscribe to the stream.
 
 ## Planning phase (before the build session)
-Execution is **two AI calls**. First a short, **MCP-free generation call**
+Execution starts with a short **generation call**
 (`ClaudeService.plan_execution_steps`, `plan_steps.md.j2`, generation profile = repo-wide
-reads, no writes) breaks the task into an ordered list of concrete steps ("research X",
+reads, no writes) that breaks the task into an ordered list of concrete steps ("research X",
 "implement Y", "add tests", "run the suite"). These are seeded into `progress.steps`
 (`storage.seed_steps`) **all incomplete except the first, which is set `in_progress`**, and a
 `steps` SSE event is emitted so the UI shows the plan immediately. The build session that
 follows is given this plan inlined in its prompt — it does **not** re-plan. (If planning
 fails, the execution is marked `failed` before any worktree session starts.)
 
-## The run loop
-ExecutionManager spawns a `claude -p` build session built by
-`ClaudeService.build_run_command()` (03): `cwd = worktree/`, `--output-format stream-json`,
-the **execution** permissions profile compiled into `--settings`/`--permission-mode`/`--add-dir`
-(09), the MCP server (`--mcp-config` + `--strict-mcp-config`) and the `PreToolUse` hook
-registered, all bound to this `executionId` via env. ExecutionManager owns the subprocess
-(in a registry) so it can kill it; it drains `stream-json` only to capture the `session_id`
-from the init event (progress itself comes from the MCP tools, not text parsing).
-- **Prompt:** rendered from `execute_task.md.j2` (09). The **task spec is inlined** (Claude
-  must have it verbatim) **along with the pre-planned step list**; the project spec, sibling
-  specs, `CLAUDE.md`, and source are read by path **from the worktree's own checkout** (reads
-  are confined to the worktree — see Permissions). Claude works the plan one step at a time:
-  as it finishes each it calls `complete_step(title)` — which marks that step `done` and
-  **auto-advances the next pending step to `in_progress`** — and if the plan needs to change it
-  calls `revise_steps` with the **entire** updated list (each `{title, detail?, done}`), which
-  rebuilds the list (preserving ids/timestamps by title) and re-derives the active step. It
-  asks via `ask_question` when blocked and calls `report_done` when finished. It may only
-  **write** inside the worktree.
-- **Progress writes come from the MCP tools**, not from parsing model text: each tool call
-  mutates this execution's `progress.json` (via StorageService, locked atomic write) and
-  publishes an event to the SSE bus. This is why MCP is preferred over Claude editing JSON.
-- **Session id:** capture from the `stream-json` init event and persist to `progress.json`
-  as soon as known (enables every later `--resume`).
-- **Completion:** `report_done` is **guarded** — the internal endpoint first checks every step
-  is `done`/`skipped`; if any remain it is **rejected** (returns `complete:false` + the list of
-  remaining steps to the model, the process keeps running) so the session must finish or revise
-  the plan before it can end. Once all steps are complete it records `doneSummary` and stops the
-  process; on exit the run loop **commits the worktree changes once** with a generated message
-  (single commit per `report_done`; subsequent feedback rounds add their own commit), sets
-  `progress.status = completed`, task `status = in_review`, emits `status` SSE.
-- **Failure:** non-zero exit / crash (with no recorded pause) → `progress.status = failed`,
-  surface stderr; the user can retry/feedback.
-- **Why exit?** The run loop distinguishes *why* a process ended via an interrupt reason set
-  when we kill it: `input` (question/permission — stay `awaiting_input`, do nothing),
-  `done` (finalize/commit), `cancel` (failed); a natural exit-0 with no reason also finalizes,
-  a non-zero exit fails.
+## The run loop (turn-based)
+`ExecutionManager._run` loops: each iteration spawns one build turn via
+`ClaudeService.build_run_command()` (03) — `cwd = worktree/`, `--output-format stream-json`,
+**`--json-schema <command schema>`**, the **execution** permissions profile compiled into
+`--settings`/`--permission-mode`/`--add-dir` (09), and the `PreToolUse` hook, all bound to this
+`executionId` via env. ExecutionManager owns the subprocess (registry) so it can kill it; it
+drains `stream-json` to (a) capture `session_id`, (b) surface the live **activity** line
+(`thinking`/`tool_use`/`text` → `progress.activity`, published), and (c) read the turn's
+**command** from the final `result` event's `structured_output`.
+- **Prompt:** rendered from `execute_task.md.j2` (09). The **task spec is inlined** along with
+  the pre-planned step list; the project spec, sibling specs, `CLAUDE.md`, and source are read
+  by path **from the worktree's own checkout** (reads confined to the worktree — see
+  Permissions). The model does the current step's work with its tools, then returns one command.
+- **Dispatch** (`_handle_command`, see `api/services/exec_protocol.py`):
+  `step_complete{title}` marks the step `done` + auto-advances the next → resume; `revise_steps`
+  replaces the whole plan (preserving ids/timestamps by title) → resume; `thinking` updates the
+  activity → resume; `question`/`issue` records a pending question (with `kind`) → **pause**
+  (`awaiting_input`); `done` finalizes (below).
+- **Command source:** the live `structured_output`; if a turn's process is lost (server restart)
+  the command is recovered from the transcript (`~/.claude/projects/*/<session_id>.jsonl`, a
+  `tool_use` named `StructuredOutput`).
+- **Session id:** captured from `stream-json` and persisted as soon as known (enables `--resume`).
+- **Completion (`done`):** **guarded** — if any step is still `done`/`skipped`-incomplete the
+  loop resumes the session with the list of remaining steps (it must finish or revise first).
+  Once all steps are complete it records `doneSummary`, **commits the worktree once** with a
+  generated message, sets `progress.status = completed`, task `status = in_review`, clears the
+  task's error flag, emits `status` SSE.
+- **Error (no auto-resume):** a turn that returns no valid command (Anthropic/connectivity/CLI
+  failure) → `progress.status = failed` with the message, the task's `executionError` flag set
+  (sidebar shows red); the user resumes with **Try again** or sends feedback. `cancel` →
+  `failed` ("cancelled by user").
 
 ## Mid-run interactions (resume the session)
 All use `--resume <sessionId>` (03). **Before every resume, re-sync the base** (an execution
@@ -130,7 +132,7 @@ base, plus the current HEAD commit sha (used to partition `comments.json`). Comp
 `git -C <worktree> diff` / `git status --porcelain` / `git rev-parse HEAD`.
 
 ## SSE bus
-ExecutionManager keeps an in-memory `dict[execution_id -> subscribers]`. MCP tool calls and
+ExecutionManager keeps an in-memory `dict[execution_id -> subscribers]`. Command dispatch and
 loop state changes `publish(execution_id, event)`. The `/executions/{id}/stream` endpoint
 (02) subscribes; on connect it first sends the current `progress.json` snapshot, then live
 events. Survives reconnects because state is always in `progress.json`.
@@ -187,30 +189,29 @@ allow/deny rules.
 1. Worktree create/remove helpers + idempotent `.gitignore` handling.
 2. ExecutionManager: start flow, `progress.json` init, two-way task↔execution linking.
 3. SSE bus (pub/sub) + snapshot-on-connect.
-4. Run loop via `run_session()` (execution permissions profile + `execute_task.md.j2`) +
-   MCP-driven progress writes.
+4. Turn loop (`build_run_command` with `--json-schema` + `_run`/`_handle_command`) parsing
+   structured-output commands; `exec_protocol.py` (schema + transcript fallback).
 5. `PreToolUse` approval hook + `pendingPermissions` ↔ `/permission` wiring (09).
-6. Answer / feedback / PR-comment resume paths.
+6. Answer / feedback / PR-comment resume paths; `resume` (Try again) + startup
+   `mark_orphans_interrupted`.
 7. Diff endpoint + PR creation.
 8. Cancel/cleanup + concurrent-execution registry.
-9. Tests: worktree lifecycle, MCP→progress→SSE path, permission-hook flow, resume flows
-   (mock ClaudeService).
+9. Tests: worktree lifecycle, command-parse→progress→SSE path, transcript fallback,
+   permission-hook flow, resume flows (mock ClaudeService).
 
 ## Resolved decisions
-- **Interaction model:** kill-and-resume (above), not a blocking hook/tool. Questions +
-  permission requests are persisted to `progress.json`, the process is killed, and the user's
-  response re-spawns it with `--resume` (+ `--allowedTools` for grants).
-- **Helper ↔ Promptly channel:** localhost internal HTTP API, token-guarded. uvicorn is the
-  single writer of `progress.json` and owns SSE + the kill.
+- **Progress protocol:** a `--json-schema` **structured-output command per turn** (no MCP) —
+  parsed from the turn's `structured_output`, transcript as fallback. See
+  `api/services/exec_protocol.py` and [03](./03-claude-cli-integration.md).
+- **Interaction model:** backend-driven turn loop. `question`/`issue` commands pause; permission
+  requests are kill-and-resume via the `PreToolUse` hook (the only child-process callback);
+  resumes use `--resume` (+ `--allowedTools` for grants).
+- **Helper ↔ Promptly channel:** the localhost internal HTTP API now carries only the
+  `permission-request` callback (token-guarded). uvicorn is the single writer of `progress.json`.
 - **PR tooling:** `gh` CLI (reuses the user's GitHub auth).
-- **Liveness monitor + auto-resume:** in-flight runs die with the server (or if a build
-  process is killed without finalizing). We track which executions have a live/starting run in
-  an in-memory `_active` set (maintained synchronously, since `_procs` is only populated after
-  the subprocess spawns and planning has no process). The client polls
-  `POST /executions/{id}/ensure-running` **on visit and on an interval** while a run shows
-  `running`; if the execution is `running` but not in `_active`, the run is dead → we
-  **resume the session (`--resume`) and tell it to continue**. If there's no `session_id` to
-  resume, the execution is marked `failed`. A session that's gone surfaces via the normal
-  failure path (the resumed `claude --resume` exits non-zero → `_finalize` records the error →
-  failed banner). We no longer fail orphaned `running` executions on startup — they're
-  recovered on demand; `awaiting_input` stays paused for the user.
+- **Errors & recovery (no auto-resume):** a turn that returns no valid command (Anthropic down,
+  connectivity, CLI crash) marks the execution `failed` with the message and flags the task red.
+  On **server restart**, `mark_orphans_interrupted()` flips still-`running` executions to that
+  error state (keeping the session); `awaiting_input` stays paused. The user resumes any error
+  with **Try again** (`POST /executions/{id}/resume`), which `--resume`s the loop (reconciling a
+  trailing transcript question/issue into a pause instead of re-running).
