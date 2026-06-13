@@ -205,8 +205,8 @@ export const api = {
   // Executions
   getProgress: (id: string) =>
     request<ProgressState>(`/executions/${id}`, { scoped: true }),
-  ensureRunning: (id: string) =>
-    request<ProgressState>(`/executions/${id}/ensure-running`, {
+  resumeExecution: (id: string) =>
+    request<ProgressState>(`/executions/${id}/resume`, {
       method: "POST",
       scoped: true,
     }),

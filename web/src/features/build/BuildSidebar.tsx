@@ -92,16 +92,29 @@ function Row({
   onSelect: () => void;
 }) {
   const meta = task.status ? STATUS_META[task.status] : null;
+  const errored = !!task.executionError;
   return (
     <button
       className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
-        selected ? "bg-blue-100 text-blue-800" : "text-slate-700 hover:bg-slate-100"
+        selected
+          ? "bg-blue-100 text-blue-800"
+          : errored
+            ? "text-red-700 hover:bg-red-50"
+            : "text-slate-700 hover:bg-slate-100"
       }`}
       onClick={onSelect}
+      title={errored ? "This execution hit an error — open it to retry" : undefined}
     >
-      {meta && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`} />}
-      <span className="min-w-0 flex-1 truncate">{task.name}</span>
-      {task.status === "in_progress" && task.executionId && (
+      <span
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+          errored ? "bg-red-500" : meta ? meta.dot : "bg-transparent"
+        }`}
+      />
+      <span className={`min-w-0 flex-1 truncate ${errored ? "font-medium" : ""}`}>
+        {task.name}
+      </span>
+      {errored && <span className="shrink-0 text-xs text-red-500">⚠</span>}
+      {task.status === "in_progress" && task.executionId && !errored && (
         <Spinner className="text-blue-500" />
       )}
     </button>

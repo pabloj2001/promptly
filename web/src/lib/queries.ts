@@ -276,29 +276,18 @@ export function useExecution(executionId: string | null) {
   });
 }
 
-// Liveness monitor: while a run shows `running`, poll the backend (on mount/visit +
-// interval). The backend resumes the session if its process died, or marks it failed
-// if it can't. We write the returned ProgressState into the execution cache, and
-// refresh the task lists when it lands on a terminal status.
-export function useExecutionMonitor(executionId: string | null, isRunning: boolean) {
+// "Try again": resume a build that landed in an error state (re-runs the loop via
+// --resume on the backend). Updates the execution cache + task lists with the result.
+export function useResumeExecution() {
   const qc = useQueryClient();
   const project = useProject();
-  return useQuery({
-    queryKey: ["executionMonitor", project, executionId],
-    queryFn: async () => {
-      const state = await api.ensureRunning(executionId!);
-      qc.setQueryData(["execution", project, executionId], state);
-      if (state.status !== "running" && state.status !== "awaiting_input") {
-        qc.invalidateQueries({ queryKey: ["tasks", project] });
-        qc.invalidateQueries({ queryKey: ["taskGraph", project] });
-      }
-      return state;
+  return useMutation({
+    mutationFn: (id: string) => api.resumeExecution(id),
+    onSuccess: (state) => {
+      qc.setQueryData(["execution", project, state.executionId], state);
+      qc.invalidateQueries({ queryKey: ["tasks", project] });
+      qc.invalidateQueries({ queryKey: ["taskGraph", project] });
     },
-    enabled: !!project && !!executionId && isRunning,
-    refetchInterval: 15000,
-    refetchOnWindowFocus: true,
-    refetchOnMount: "always",
-    staleTime: 0,
   });
 }
 

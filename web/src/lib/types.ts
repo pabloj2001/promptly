@@ -45,6 +45,7 @@ export interface MetadataEntry {
   dependsOn: string[];
   custom: Record<string, unknown>;
   executionId?: string | null;
+  executionError?: boolean;
   operation?: Operation | null;
   file: string;
   createdAt: string;
@@ -131,6 +132,7 @@ export interface Question {
   id: string;
   question: string;
   answer?: string | null;
+  kind?: "question" | "issue";
   askedAt: string;
 }
 
@@ -159,6 +161,7 @@ export interface ProgressState {
   sessionId?: string | null;
   status: ProgressStatus;
   error?: string | null;
+  activity?: string | null;
   doneSummary?: string | null;
   pendingQuestions: Question[];
   pendingPermissions: PermissionRequest[];

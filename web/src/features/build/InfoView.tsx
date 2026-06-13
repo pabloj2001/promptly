@@ -6,7 +6,7 @@ import {
   useCreatePr,
   useDecidePermission,
   useExecution,
-  useExecutionMonitor,
+  useResumeExecution,
   useSendFeedback,
   useStartExecution,
   useTasks,
@@ -27,9 +27,6 @@ export function InfoView({ task }: { task: MetadataEntry }) {
   const executionId = task.executionId ?? null;
   useExecutionStream(executionId);
   const { data: progress } = useExecution(executionId);
-  // Safety net: SSE only pushes on events, so a silently-dead run would look stuck.
-  // While running, poll the backend (on visit + interval) to detect death and resume.
-  useExecutionMonitor(executionId, progress?.status === "running");
   const start = useStartExecution();
 
   return (
@@ -150,6 +147,7 @@ function RunBody({
   executionId: string;
 }) {
   const cancel = useCancelExecution();
+  const resume = useResumeExecution();
   const running = progress.status === "running";
   const awaiting = progress.status === "awaiting_input";
   const completed = progress.status === "completed";
@@ -161,20 +159,36 @@ function RunBody({
   return (
     <div className="space-y-5">
       {running && (
-        <div className="flex items-center gap-2 rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-700">
-          <Spinner /> Claude is working…
-          <button
-            className="ml-auto text-xs font-medium text-blue-700 underline hover:text-blue-900"
-            onClick={() => cancel.mutate({ id: executionId })}
-          >
-            Cancel
-          </button>
+        <div className="rounded-md bg-blue-50 px-3 py-2 text-sm text-blue-700">
+          <div className="flex items-center gap-2">
+            <Spinner /> Claude is working…
+            <button
+              className="ml-auto text-xs font-medium text-blue-700 underline hover:text-blue-900"
+              onClick={() => cancel.mutate({ id: executionId })}
+            >
+              Cancel
+            </button>
+          </div>
+          {progress.activity && (
+            <div className="mt-1 truncate text-xs text-blue-600/80">{progress.activity}</div>
+          )}
         </div>
       )}
       {failed && (
-        <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
-          Execution failed{progress.error ? `: ${progress.error}` : "."} You can send
-          feedback below to resume.
+        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          <div className="font-medium">
+            Execution error{progress.error ? `: ${progress.error}` : "."}
+          </div>
+          <div className="mt-2 flex items-center gap-3">
+            <button
+              className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              onClick={() => resume.mutate(executionId)}
+              disabled={resume.isPending}
+            >
+              {resume.isPending ? "Resuming…" : "Try again"}
+            </button>
+            <span className="text-xs text-red-600/80">or send feedback below to steer it.</span>
+          </div>
         </div>
       )}
 
@@ -241,33 +255,46 @@ function QuestionBox({
   question,
 }: {
   executionId: string;
-  question: { id: string; question: string };
+  question: { id: string; question: string; kind?: "question" | "issue" };
 }) {
   const [answer, setAnswer] = useState("");
   const answerQ = useAnswerQuestion();
+  const isIssue = question.kind === "issue";
   const submit = () => {
     if (!answer.trim()) return;
     answerQ.mutate({ id: executionId, questionId: question.id, answer: answer.trim() });
     setAnswer("");
   };
   return (
-    <section className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-      <h3 className="mb-1 text-sm font-semibold text-amber-800">Claude has a question</h3>
-      <p className="mb-3 text-sm text-slate-700">{question.question}</p>
+    <section
+      className={`rounded-lg border p-4 ${
+        isIssue ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"
+      }`}
+    >
+      <h3
+        className={`mb-1 text-sm font-semibold ${
+          isIssue ? "text-red-800" : "text-amber-800"
+        }`}
+      >
+        {isIssue ? "⚠ Claude hit a blocker" : "Claude has a question"}
+      </h3>
+      <p className="mb-3 whitespace-pre-wrap text-sm text-slate-700">{question.question}</p>
       <textarea
         className="w-full rounded-md border border-slate-300 p-2 text-sm"
         rows={3}
-        placeholder="Type your answer…"
+        placeholder={isIssue ? "Give guidance to unblock it…" : "Type your answer…"}
         value={answer}
         onChange={(e) => setAnswer(e.target.value)}
       />
       <div className="mt-2 flex justify-end">
         <button
-          className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+          className={`rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 ${
+            isIssue ? "bg-red-600 hover:bg-red-700" : "bg-amber-600 hover:bg-amber-700"
+          }`}
           disabled={answerQ.isPending || !answer.trim()}
           onClick={submit}
         >
-          {answerQ.isPending ? "Sending…" : "Send answer"}
+          {answerQ.isPending ? "Sending…" : isIssue ? "Send guidance" : "Send answer"}
         </button>
       </div>
     </section>
