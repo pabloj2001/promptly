@@ -28,7 +28,7 @@ from typing import Optional
 from ..models import CamelModel, Comment, DocType, PermissionRequest
 from ..storage import StorageService
 from ..storage import paths
-from .exec_protocol import COMMAND_SCHEMA
+from .exec_protocol import COMMAND_SCHEMA, PLAN_SCHEMA
 from .permissions import build_cli_permissions
 from .prompts import PromptLibrary
 
@@ -166,6 +166,76 @@ class ClaudeService:
             cost=data.get("total_cost_usd"),
         )
 
+    async def _invoke_structured(
+        self,
+        prompt: str,
+        *,
+        schema: dict,
+        cwd: str,
+        settings_json: Optional[str] = None,
+        permission_mode: Optional[str] = None,
+        add_dirs: Optional[list[str]] = None,
+        model: Optional[str] = None,
+        on_event=None,
+    ) -> dict:
+        """One-shot structured-output call: `claude -p --json-schema <schema>
+        --output-format stream-json`. Streams events to ``on_event`` (for the live
+        activity line) and returns the final ``structured_output`` object."""
+        args = [
+            self.cli, "-p", prompt,
+            "--output-format", "stream-json", "--verbose",
+            "--model", model or self.default_model,
+            "--json-schema", json.dumps(schema),
+        ]
+        if settings_json:
+            args += ["--settings", settings_json]
+        if permission_mode:
+            args += ["--permission-mode", permission_mode]
+        for d in add_dirs or []:
+            args += ["--add-dir", d]
+
+        proc = await asyncio.create_subprocess_exec(
+            *args, cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        structured: Optional[dict] = None
+        stderr_buf: list[bytes] = []
+
+        async def drain_stdout() -> None:
+            assert proc.stdout is not None
+            nonlocal structured
+            async for raw in proc.stdout:
+                line = raw.decode(errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if on_event:
+                    on_event(evt)
+                if evt.get("type") == "result" and isinstance(
+                    evt.get("structured_output"), dict
+                ):
+                    structured = evt["structured_output"]
+
+        async def drain_stderr() -> None:
+            assert proc.stderr is not None
+            stderr_buf.append(await proc.stderr.read())
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(drain_stdout(), drain_stderr()), timeout=self.timeout)
+            await proc.wait()
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise ClaudeError(f"claude CLI timed out after {self.timeout}s")
+
+        if proc.returncode != 0 and structured is None:
+            detail = b"".join(stderr_buf).decode(errors="replace")[:2000]
+            raise ClaudeError(f"claude CLI exited {proc.returncode}: {detail}")
+        return {"structured_output": structured}
+
     def _gen_cli_args(self, root: str, project: str) -> dict:
         """Generation profile (09): cwd = repo root, repo-wide reads, writes denied."""
         cfg = self.storage.read_permissions(root, project)
@@ -184,10 +254,12 @@ class ClaudeService:
 
     async def plan_execution_steps(
         self, *, root: str, project: str, task_name: str, task_file: str,
-        dependency_names: list[str],
+        dependency_names: list[str], on_event=None,
     ) -> list[StepStub]:
-        """Planning phase (07): a separate, MCP-free generation call that breaks the
-        task into an ordered list of steps before the build session starts."""
+        """Planning phase (07): a one-shot generation call that breaks the task into an
+        ordered list of steps before the build session starts. Uses --json-schema so the
+        plan comes back as reliable structured output; streams its line-of-thinking to
+        ``on_event`` (surfaced as the live activity)."""
         pdir = paths.project_dir(root, project)
         tf = pdir / task_file
         task_spec = tf.read_text(encoding="utf-8")[:_BODY_BUDGET] if tf.exists() else ""
@@ -200,9 +272,10 @@ class ClaudeService:
             task_spec=task_spec,
             dependency_names=dependency_names,
         )
-        result = await self._invoke(rendered, **self._gen_cli_args(root, project))
-        parsed = _parse_structured(result.text, require="steps")
-        items = (parsed or {}).get("steps") if parsed else None
+        result = await self._invoke_structured(
+            rendered, schema=PLAN_SCHEMA, on_event=on_event,
+            **self._gen_cli_args(root, project))
+        items = (result.get("structured_output") or {}).get("steps")
         if not isinstance(items, list):
             raise ClaudeError("could not parse step plan")
         stubs: list[StepStub] = []

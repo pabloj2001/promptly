@@ -61,10 +61,13 @@ tracks the run loop.
    UI can subscribe to the stream.
 
 ## Planning phase (before the build session)
-Execution starts with a short **generation call**
+Execution starts with a short **one-shot generation call**
 (`ClaudeService.plan_execution_steps`, `plan_steps.md.j2`, generation profile = repo-wide
 reads, no writes) that breaks the task into an ordered list of concrete steps ("research X",
-"implement Y", "add tests", "run the suite"). These are seeded into `progress.steps`
+"implement Y", "add tests", "run the suite"). It uses **`--json-schema` (PLAN_SCHEMA)** so the
+plan comes back as reliable structured output (single call, no turns/commands), and streams its
+line-of-thinking to the same compact `activity` the build loop uses (so the UI shows what it's
+doing while planning). The steps are seeded into `progress.steps`
 (`storage.seed_steps`) **all incomplete except the first, which is set `in_progress`**, and a
 `steps` SSE event is emitted so the UI shows the plan immediately. The build session that
 follows is given this plan inlined in its prompt — it does **not** re-plan. (If planning

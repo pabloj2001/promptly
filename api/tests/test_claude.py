@@ -129,6 +129,44 @@ async def test_derive_import_metadata_falls_back(svc, project, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_plan_execution_steps_structured(svc, project, monkeypatch):
+    name, root = project
+
+    async def fake_structured(prompt, *, schema, on_event=None, **kw):
+        assert schema.get("required") == ["steps"]  # PLAN_SCHEMA
+        if on_event:  # streams its line-of-thinking
+            on_event({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Reading the spec"}]}})
+        return {"structured_output": {"steps": [
+            {"title": "Research", "detail": "look at X"}, {"title": "Implement"}]}}
+
+    monkeypatch.setattr(svc, "_invoke_structured", fake_structured)
+    seen = []
+    stubs = await svc.plan_execution_steps(
+        root=root, project=name, task_name="T", task_file="tasks/none.md",
+        dependency_names=[], on_event=lambda e: seen.append(e))
+
+    assert [s.title for s in stubs] == ["Research", "Implement"]
+    assert stubs[0].detail == "look at X"
+    assert seen  # activity events were forwarded
+
+
+@pytest.mark.asyncio
+async def test_plan_execution_steps_empty_raises(svc, project, monkeypatch):
+    from api.services.claude import ClaudeError
+    name, root = project
+
+    async def fake_structured(prompt, *, schema, on_event=None, **kw):
+        return {"structured_output": {"steps": []}}
+
+    monkeypatch.setattr(svc, "_invoke_structured", fake_structured)
+    with pytest.raises(ClaudeError):
+        await svc.plan_execution_steps(
+            root=root, project=name, task_name="T", task_file="tasks/none.md",
+            dependency_names=[])
+
+
+@pytest.mark.asyncio
 async def test_name_hint_overrides(svc, project, monkeypatch):
     name, root = project
 

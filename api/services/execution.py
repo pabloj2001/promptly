@@ -153,10 +153,17 @@ class ExecutionManager:
     ) -> None:
         """Phase 1: ask Claude to break the task into steps and seed them (first
         in_progress). Phase 2: run the build session with the plan inlined."""
+        def on_plan_event(evt: dict) -> None:
+            if evt.get("type") == "assistant":
+                act = activity_summary(evt)
+                if act:
+                    state = self.storage.set_activity(root, project, execution_id, act)
+                    self.publish_progress(execution_id, "progress", state)
+
         try:
             stubs = await self.claude.plan_execution_steps(
                 root=root, project=project, task_name=task_name,
-                task_file=task_file, dependency_names=deps,
+                task_file=task_file, dependency_names=deps, on_event=on_plan_event,
             )
         except Exception as exc:  # planning failed -> mark the execution failed
             state = self.storage.set_execution_status(

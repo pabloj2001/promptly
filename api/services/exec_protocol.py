@@ -52,6 +52,25 @@ COMMAND_SCHEMA: dict = {
     "required": ["type"],
 }
 
+# Schema for the planning phase (07): a one-shot call that returns the ordered step list.
+PLAN_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "steps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "detail": {"type": "string"},
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    "required": ["steps"],
+}
+
 # The CLI surfaces structured output as a synthetic tool with this name.
 _STRUCTURED_TOOL = "StructuredOutput"
 

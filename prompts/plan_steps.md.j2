@@ -25,5 +25,5 @@ through one at a time — e.g. "Research how X is wired up", "Implement the Y en
 Aim for the natural granularity of the work — usually 3–8 steps. Order them so each builds on
 the previous. Do not create or edit any files; you have read-only access.
 
-Respond with ONLY a single JSON object — no code fences, no commentary — in exactly this shape:
-{"steps": [{"title": "<imperative step title>", "detail": "<optional one line>"}]}
+Return the plan as your structured output: an object `{"steps": [{"title": "<imperative step
+title>", "detail": "<optional one line>"}]}`.
