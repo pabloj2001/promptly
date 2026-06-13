@@ -19,9 +19,10 @@ def test_command_from_result_event():
 
 
 def test_activity_summary_tool_and_text():
+    # File tools: verb + basename only (not the full path).
     tool_ev = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "Edit", "input": {"file_path": "a/b.py"}}]}}
-    assert exec_protocol.activity_summary(tool_ev) == "Edit: a/b.py"
+    assert exec_protocol.activity_summary(tool_ev) == "Editing b.py"
     text_ev = {"type": "assistant", "message": {"content": [
         {"type": "text", "text": "Reading the spec\nmore"}]}}
     assert exec_protocol.activity_summary(text_ev) == "Reading the spec"
@@ -29,6 +30,19 @@ def test_activity_summary_tool_and_text():
     so_ev = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "StructuredOutput", "input": {"type": "done"}}]}}
     assert exec_protocol.activity_summary(so_ev) is None
+
+
+def test_activity_summary_bash_strips_env_prefix():
+    ev = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Bash",
+         "input": {"command": "PYTHONPATH=. FOO='a b' python3 -m pytest"}}]}}
+    assert exec_protocol.activity_summary(ev) == "Running python3 -m pytest"
+
+
+def test_activity_summary_search_uses_query():
+    ev = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Grep", "input": {"pattern": "def foo"}}]}}
+    assert exec_protocol.activity_summary(ev) == "Searching for def foo"
 
 
 def test_read_transcript_command(tmp_path, monkeypatch):

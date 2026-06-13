@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -98,9 +99,53 @@ def assistant_texts(event_or_entry: dict) -> list[str]:
     return out
 
 
+# Tool name → human verb, so the activity line reads like a sentence
+# ("Editing service.py") instead of an API name ("Edit: api/storage/service.py").
+_TOOL_VERBS = {
+    "Edit": "Editing",
+    "MultiEdit": "Editing",
+    "Write": "Writing",
+    "Read": "Reading",
+    "NotebookEdit": "Editing",
+    "Bash": "Running",
+    "Grep": "Searching for",
+    "Glob": "Finding",
+    "WebFetch": "Fetching",
+    "WebSearch": "Searching for",
+    "Task": "Delegating",
+    "TodoWrite": "Updating plan",
+}
+
+# Leading `FOO=bar BAZ='x y'` assignments on a shell command — noise we strip so the
+# activity shows the actual command ("python3 -m pytest", not "PYTHONPATH=. python3 …").
+_ENV_PREFIX = re.compile(r"^(?:\w+=(?:'[^']*'|\"[^\"]*\"|\S+)\s+)+")
+
+
+def _tool_activity(name: str, inp: dict) -> str:
+    """One readable phrase for a tool_use: a verb plus a short, de-noised target
+    (basenames for files, the env-stripped command for Bash, the query for searches)."""
+    verb = _TOOL_VERBS.get(name, name)
+    if name == "Bash":
+        cmd = str(inp.get("command") or "").strip()
+        cmd = cmd.splitlines()[0] if cmd else ""
+        cmd = _ENV_PREFIX.sub("", cmd).strip()
+        return f"{verb} {cmd}".strip() if cmd else verb
+    if name in ("Grep", "Glob", "WebSearch"):
+        q = str(inp.get("pattern") or inp.get("query") or "").strip()
+        return f"{verb} {q}".strip() if q else verb
+    path = inp.get("file_path") or inp.get("path") or inp.get("notebook_path") or inp.get("url")
+    if path:
+        target = str(path).strip().splitlines()[0]
+        # Show just the file name, not the full path (URLs/patterns kept whole).
+        if "/" in target and "://" not in target:
+            target = Path(target).name
+        return f"{verb} {target}".strip()
+    return verb
+
+
 def activity_summary(event: dict) -> Optional[str]:
     """A short 'what is it doing now' string from an assistant event: a tool action
-    (e.g. ``Edit foo.py``) or the first line of narration text."""
+    (e.g. ``Editing foo.py``) or the first line of narration text."""
     content = (event.get("message") or {}).get("content")
     if not isinstance(content, list):
         return None
@@ -108,10 +153,7 @@ def activity_summary(event: dict) -> Optional[str]:
         if not isinstance(b, dict):
             continue
         if b.get("type") == "tool_use" and b.get("name") and b.get("name") != _STRUCTURED_TOOL:
-            inp = b.get("input") or {}
-            target = inp.get("file_path") or inp.get("path") or inp.get("command") or ""
-            target = str(target).strip().splitlines()[0] if target else ""
-            return f"{b['name']}: {target}".strip().rstrip(":") if target else str(b["name"])
+            return _tool_activity(b["name"], b.get("input") or {})
     for t in assistant_texts(event):
         line = t.strip().splitlines()[0] if t.strip() else ""
         if line:
