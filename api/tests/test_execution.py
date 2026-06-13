@@ -87,6 +87,114 @@ def test_sync_worktree_ff_and_conflict(root, tmp_path):
     assert res2["updated"] and "README.md" in res2["conflicts"]
 
 
+def test_merge_branches_and_branch_exists(root, tmp_path):
+    from pathlib import Path
+
+    _seed_repo(root)
+    base_branch = worktree.current_branch(root)
+
+    # Two dependency branches off base, each adding a distinct file.
+    for name, fname in [("promptly/dep-a", "a.txt"), ("promptly/dep-b", "b.txt")]:
+        _git(["checkout", "-q", "-b", name, base_branch], root)
+        Path(root, fname).write_text("x\n")
+        _git(["add", "-A"], root)
+        _git(["commit", "-q", "-m", name], root)
+    _git(["checkout", "-q", base_branch], root)
+
+    assert worktree.branch_exists(root, "promptly/dep-a")
+    assert not worktree.branch_exists(root, "promptly/missing")
+
+    wt = str(tmp_path / "wt")
+    base = worktree.add_worktree(root, wt, worktree.branch_name("t", "mergeid1"), base=base_branch)
+    res = worktree.merge_branches(wt, ["promptly/dep-a", "promptly/dep-b"])
+    assert res["conflicts"] == [] and len(res["merged"]) == 2
+    assert Path(wt, "a.txt").exists() and Path(wt, "b.txt").exists()
+    assert worktree.head_sha(wt) != base  # advanced past the original base
+
+
+def test_merge_branches_reports_conflict(root, tmp_path):
+    from pathlib import Path
+
+    _seed_repo(root)
+    base_branch = worktree.current_branch(root)
+    _git(["checkout", "-q", "-b", "promptly/dep-c", base_branch], root)
+    Path(root, "README.md").write_text("dep edit\n")
+    _git(["add", "-A"], root)
+    _git(["commit", "-q", "-m", "dep README"], root)
+    _git(["checkout", "-q", base_branch], root)
+
+    wt = str(tmp_path / "wt")
+    worktree.add_worktree(root, wt, worktree.branch_name("t", "conf1"), base=base_branch)
+    Path(wt, "README.md").write_text("worktree edit\n")
+    _git(["add", "-A"], wt)
+    _git(["commit", "-q", "-m", "wt README"], wt)
+
+    res = worktree.merge_branches(wt, ["promptly/dep-c"])
+    assert "README.md" in res["conflicts"]
+
+
+def test_merge_dependency_branches_bases_off_pushed_dep(storage, root, tmp_path):
+    """A dependent task whose dependency is in review + pushed gets that dependency's
+    branch merged into its worktree, and the diff base advances past it."""
+    from pathlib import Path
+
+    _seed_repo(root)
+    base_branch = worktree.current_branch(root)
+    dep_branch = "promptly/dep-feature"
+    _git(["checkout", "-q", "-b", dep_branch, base_branch], root)
+    Path(root, "dep_file.txt").write_text("dependency work\n")
+    _git(["add", "-A"], root)
+    _git(["commit", "-q", "-m", "dep work"], root)
+    _git(["checkout", "-q", base_branch], root)
+
+    storage.create_project("Demo", root)
+    dep = storage.create_entry(root, "Demo", type="task", display_name="Dep")
+    dependent = storage.create_entry(root, "Demo", type="task", display_name="Dependent")
+    storage.patch_metadata(root, "Demo", "tasks", dependent.id, {"dependsOn": [dep.id]})
+    storage.create_execution(root, "Demo", "depexec", dep.id)
+    storage.set_execution_meta(root, "Demo", "depexec", branch=dep_branch, base_sha="x")
+    storage.patch_metadata(root, "Demo", "tasks", dep.id, {
+        "status": TaskStatus.in_review.value,
+        "executionId": "depexec",
+        "relatedPrs": [{"url": "http://pr/1", "number": 1, "state": "open"}],
+    })
+
+    wt = str(tmp_path / "wt")
+    base = worktree.add_worktree(root, wt, worktree.branch_name("dependent", "dep01"), base=base_branch)
+
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    dependent_obj = storage.get_entry(root, "Demo", "tasks", dependent.id)
+    prefix, new_base = em._merge_dependency_branches(root, "Demo", dependent_obj, wt, base)
+
+    assert "Dep" in prefix and "in review" in prefix
+    assert Path(wt, "dep_file.txt").exists()
+    assert new_base != base  # base advanced to the post-merge tip
+
+
+def test_merge_dependency_branches_skips_unpushed_or_done(storage, root, tmp_path):
+    """No merge when the dependency is done (already in base) or in review but not
+    pushed (no PR) — base_sha stays put and no prefix is added."""
+    _seed_repo(root)
+    base_branch = worktree.current_branch(root)
+    storage.create_project("Demo", root)
+    done = storage.create_entry(root, "Demo", type="task", display_name="Done")
+    unpushed = storage.create_entry(root, "Demo", type="task", display_name="Unpushed")
+    dependent = storage.create_entry(root, "Demo", type="task", display_name="Dependent")
+    storage.patch_metadata(root, "Demo", "tasks", dependent.id,
+                           {"dependsOn": [done.id, unpushed.id]})
+    storage.patch_metadata(root, "Demo", "tasks", done.id,
+                           {"status": TaskStatus.done.value})
+    storage.patch_metadata(root, "Demo", "tasks", unpushed.id,
+                           {"status": TaskStatus.in_review.value})  # no relatedPrs
+
+    wt = str(tmp_path / "wt")
+    base = worktree.add_worktree(root, wt, worktree.branch_name("d", "skip1"), base=base_branch)
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    dependent_obj = storage.get_entry(root, "Demo", "tasks", dependent.id)
+    prefix, new_base = em._merge_dependency_branches(root, "Demo", dependent_obj, wt, base)
+    assert prefix == "" and new_base == base
+
+
 # ── internal callbacks (MCP server / hook talk back here) ────────────────────────
 
 

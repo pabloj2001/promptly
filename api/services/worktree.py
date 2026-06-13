@@ -135,6 +135,31 @@ def sync_worktree(worktree: str | Path, base_branch: str) -> dict:
     return {"updated": True, "conflicts": conflicts}
 
 
+def branch_exists(root: str | Path, branch: str) -> bool:
+    return subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=str(root), capture_output=True, text=True,
+    ).returncode == 0
+
+
+def merge_branches(worktree: str | Path, branches: list[str]) -> dict:
+    """Merge each branch into the (freshly created, clean) worktree in order, so the
+    worktree builds on top of those branches' work. Stops at the first merge that
+    produces conflicts, leaving the markers for an AI pass to resolve before the run.
+
+    Returns ``{"merged": [branches merged cleanly], "conflicts": [paths]}``.
+    """
+    merged: list[str] = []
+    for b in branches:
+        subprocess.run(["git", "merge", "--no-edit", b],
+                       cwd=str(worktree), capture_output=True, text=True)
+        conflicts = _conflicted(worktree)
+        if conflicts:
+            return {"merged": merged, "conflicts": conflicts}
+        merged.append(b)
+    return {"merged": merged, "conflicts": []}
+
+
 def _conflicted(worktree: str | Path) -> list[str]:
     out = _git(["diff", "--name-only", "--diff-filter=U"], cwd=worktree).strip()
     return [p for p in out.splitlines() if p]

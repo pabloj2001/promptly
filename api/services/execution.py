@@ -128,6 +128,13 @@ class ExecutionManager:
         from ..storage.slug import slugify
         branch = worktree.branch_name(slugify(task.name), execution_id)
         base_sha = worktree.add_worktree(root, wt, branch, base=base_branch)
+
+        # If this task depends on tasks that are in review and pushed (not yet merged
+        # to the base), build on top of their branches: merge them into the fresh
+        # worktree so their work is present, and base the diff on the post-merge tip.
+        prefix, base_sha = self._merge_dependency_branches(
+            root, project, task, wt, base_sha)
+
         self.storage.set_execution_meta(
             root, project, execution_id, branch=branch, base_sha=base_sha
         )
@@ -144,12 +151,14 @@ class ExecutionManager:
         # Plan first (separate MCP-free call), then run the build session. Done in a
         # spawned task so start() returns immediately; steps stream in over SSE.
         self._spawn_tracked(execution_id, self._plan_then_run(
-            root, project, execution_id, task_id, task.name, task.file, wt, deps))
+            root, project, execution_id, task_id, task.name, task.file, wt, deps,
+            prompt_prefix=prefix))
         return self.storage.read_progress(root, project, execution_id)
 
     async def _plan_then_run(
         self, root: str, project: str, execution_id: str, task_id: str,
         task_name: str, task_file: str, worktree_dir: str, deps: list[str],
+        prompt_prefix: str = "",
     ) -> None:
         """Phase 1: ask Claude to break the task into steps and seed them (first
         in_progress). Phase 2: run the build session with the plan inlined."""
@@ -178,7 +187,7 @@ class ExecutionManager:
         )
         self.publish_progress(execution_id, "steps", state)
 
-        prompt = self.claude.render_execute_prompt(
+        prompt = prompt_prefix + self.claude.render_execute_prompt(
             root, project, task_name=task_name, task_file=task_file,
             worktree=worktree_dir, dependency_names=deps, steps=state.steps,
         )
@@ -394,6 +403,64 @@ class ExecutionManager:
         self.storage.patch_metadata(
             root, project, "tasks", task_id, {"executionError": False})
         self.publish_progress(execution_id, "status", state)
+
+    # ── Dependency chaining (build on in-review, pushed deps) ────────────────────
+
+    def _pushed_in_review_deps(self, root: str, project: str, task) -> list[tuple[str, str]]:
+        """``(dep_name, branch)`` for each direct dependency that is **in review and
+        pushed** — its work isn't on the base branch yet, so a dependent task must
+        build on top of it. "Pushed" == it has a related PR (we push when creating
+        the PR). ``done`` deps are already merged into the base, so they're skipped."""
+        tasks_meta = self.storage.read_metadata(root, project, "tasks")
+        out: list[tuple[str, str]] = []
+        for dep_id in task.depends_on:
+            dep = tasks_meta.get(dep_id)
+            if dep is None or dep.status != TaskStatus.in_review.value:
+                continue
+            if not dep.related_prs or not dep.execution_id:
+                continue
+            dep_prog = self.storage.read_progress(root, project, dep.execution_id)
+            if dep_prog is None or not dep_prog.branch:
+                continue
+            if not worktree.branch_exists(root, dep_prog.branch):
+                continue
+            out.append((dep.name, dep_prog.branch))
+        return out
+
+    def _merge_dependency_branches(
+        self, root: str, project: str, task, wt: str, base_sha: str,
+    ) -> tuple[str, str]:
+        """Merge the branches of in-review, pushed dependencies into the fresh worktree
+        ``wt``. Returns ``(prompt_prefix, base_sha)``: on a clean merge the base_sha
+        advances to the post-merge tip (so the task's diff excludes the already-reviewed
+        dependency work) and the prefix tells the AI it's building on them; on conflict
+        the base_sha stays at the original tip and the prefix asks the AI to resolve."""
+        deps = self._pushed_in_review_deps(root, project, task)
+        if not deps:
+            return "", base_sha
+        names = [n for n, _ in deps]
+        branches = [b for _, b in deps]
+        result = worktree.merge_branches(wt, branches)
+        if result["conflicts"]:
+            files = ", ".join(result["conflicts"])
+            joined = ", ".join(names)
+            prefix = (
+                f"NOTE: this task builds on dependencies still in review ({joined}). "
+                "Merging their branches into your worktree produced merge conflicts in: "
+                f"{files}. These files contain Git conflict markers (<<<<<<< / ======= / "
+                ">>>>>>>). First resolve EVERY conflict sensibly (preserve the "
+                "dependencies' work), then `git add` the resolved files and "
+                "`git commit --no-edit` to finish the merge. Only then start the task "
+                "below.\n\n"
+            )
+            return prefix, base_sha
+        joined = ", ".join(names)
+        prefix = (
+            f"NOTE: this task depends on tasks still in review ({joined}). Their work "
+            "has already been merged into your worktree, so build on top of it — do not "
+            "re-implement their changes.\n\n"
+        )
+        return prefix, worktree.head_sha(wt)
 
     # ── Base sync (07) ─────────────────────────────────────────────────────────
 

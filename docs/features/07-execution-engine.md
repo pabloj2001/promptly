@@ -54,10 +54,20 @@ tracks the run loop.
    `executions/<id>/worktree/` off the **current branch**'s freshly-updated HEAD:
    `git -C <root> worktree add -b <branch> <execdir>/worktree <base-branch>`. The worktree is
    a checkout, so it already contains the committed project docs + the codebase.
-5. Write initial `progress.json` (`status: running`, `branch`, `baseSha`, `sessionId: null`).
-6. Link both ways: set `task.executionId = id` and `task.status = in_progress`;
+5. **Build on in-review dependencies.** For each direct dependency that is **in review and
+   pushed** (status `in_review` *and* it has a related PR — its work isn't on the base branch
+   yet), merge that dependency's execution branch into the fresh worktree
+   (`worktree.merge_branches`). On a clean merge, `baseSha` advances to the post-merge tip so
+   the task's diff shows only its *own* new work (not the already-reviewed dependency work), and
+   the build prompt is prefixed with a note that the dependency work is present (don't
+   re-implement it). On a conflict, the markers are left in place and the prompt prefix asks the
+   AI to resolve them before starting. `done` dependencies are skipped — they're already merged
+   into the base. (The Build UI also **warns** before starting a task whose dependencies aren't
+   yet in review/done; the user can proceed anyway.)
+6. Write initial `progress.json` (`status: running`, `branch`, `baseSha`, `sessionId: null`).
+7. Link both ways: set `task.executionId = id` and `task.status = in_progress`;
    `progress.taskId = id`.
-7. Kick off the **plan-then-run** background task and return `executionId` immediately so the
+8. Kick off the **plan-then-run** background task and return `executionId` immediately so the
    UI can subscribe to the stream.
 
 ## Planning phase (before the build session)
