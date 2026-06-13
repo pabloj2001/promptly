@@ -22,12 +22,35 @@ import type {
   Step,
 } from "../../lib/types";
 
+// A dependency is "ready" once it's in review or done; anything else means the
+// dependent task is being built on top of unfinished work.
+const READY_DEP_STATUSES = ["in_review", "done"];
+
 // Info view (08): status-driven run UI for the selected task.
 export function InfoView({ task }: { task: MetadataEntry }) {
   const executionId = task.executionId ?? null;
   useExecutionStream(executionId);
   const { data: progress } = useExecution(executionId);
+  const { data: tasks } = useTasks();
   const start = useStartExecution();
+  const [confirmingStart, setConfirmingStart] = useState(false);
+
+  // Dependencies that aren't ready (not in review/done). Removed deps are ignored.
+  const unmetDeps = (task.dependsOn ?? [])
+    .map((id) => tasks?.find((t) => t.id === id))
+    .filter(
+      (t): t is MetadataEntry =>
+        !!t && t.status !== "removed" && !READY_DEP_STATUSES.includes(t.status ?? ""),
+    );
+
+  const begin = () => {
+    setConfirmingStart(false);
+    start.mutate({ taskId: task.id });
+  };
+  const onBeginClick = () => {
+    if (unmetDeps.length > 0) setConfirmingStart(true);
+    else begin();
+  };
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-5">
@@ -39,13 +62,51 @@ export function InfoView({ task }: { task: MetadataEntry }) {
             This task hasn't been built yet. Start an execution to create an isolated
             worktree and have Claude build it.
           </p>
-          <button
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            disabled={start.isPending}
-            onClick={() => start.mutate({ taskId: task.id })}
-          >
-            {start.isPending ? "Starting…" : "Begin execution"}
-          </button>
+          {confirmingStart ? (
+            <div className="mx-auto max-w-md rounded-md border border-amber-200 bg-amber-50 p-4 text-left">
+              <h3 className="mb-1 text-sm font-semibold text-amber-800">
+                ⚠ Dependencies aren't ready
+              </h3>
+              <p className="mb-2 text-sm text-slate-700">
+                This task depends on {unmetDeps.length === 1 ? "a task that hasn't" : "tasks that haven't"}{" "}
+                reached review or done yet. Building now means working on top of unfinished
+                work:
+              </p>
+              <ul className="mb-3 list-disc space-y-0.5 pl-5 text-sm text-slate-700">
+                {unmetDeps.map((d) => (
+                  <li key={d.id}>
+                    {d.name}{" "}
+                    <span className="text-xs text-slate-500">
+                      ({(d.status ?? "pending").replace("_", " ")})
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <div className="flex justify-end gap-2">
+                <button
+                  className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                  onClick={() => setConfirmingStart(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                  disabled={start.isPending}
+                  onClick={begin}
+                >
+                  {start.isPending ? "Starting…" : "Start anyway"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              disabled={start.isPending}
+              onClick={onBeginClick}
+            >
+              {start.isPending ? "Starting…" : "Begin execution"}
+            </button>
+          )}
           {start.isError && (
             <p className="mt-2 text-sm text-red-600">{(start.error as Error).message}</p>
           )}
