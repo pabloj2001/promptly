@@ -102,6 +102,9 @@ class MetadataEntry(CamelModel):
     custom: dict[str, Any] = Field(default_factory=dict)
     execution_id: Optional[str] = None
     operation: Optional[Operation] = None
+    # True when this task's execution hit an error needing user attention (the Build
+    # sidebar highlights it red); cleared on resume/completion.
+    execution_error: bool = False
     file: str
     created_at: str
     updated_at: str
@@ -134,6 +137,7 @@ class Question(CamelModel):
     id: str
     question: str
     answer: Optional[str] = None
+    kind: str = "question"  # "question" | "issue" (issue = a blocker/error to surface)
     asked_at: str
 
 
@@ -162,6 +166,7 @@ class ProgressState(CamelModel):
     session_id: Optional[str] = None
     status: ProgressStatus = ProgressStatus.running
     error: Optional[str] = None
+    activity: Optional[str] = None  # latest live line-of-thinking (compact)
     done_summary: Optional[str] = None
     pending_questions: list[Question] = Field(default_factory=list)
     pending_permissions: list[PermissionRequest] = Field(default_factory=list)

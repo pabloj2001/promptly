@@ -146,47 +146,10 @@ def test_internal_endpoints_require_token(storage, root):
     app.dependency_overrides[get_storage] = lambda: storage
     client = TestClient(app, raise_server_exceptions=False)
 
-    # wrong token -> 403
-    r = client.post("/internal/executions/e2/steps/complete", params={"project": "Demo"},
-                    headers={"X-Promptly-Token": "nope"}, json={"title": "a"})
+    # wrong token -> 403 (permission-request is the one remaining internal endpoint)
+    r = client.post("/internal/executions/e2/permission-request", params={"project": "Demo"},
+                    headers={"X-Promptly-Token": "nope"}, json={"tool": "Write"})
     assert r.status_code == 403
-
-
-def test_report_done_rejected_until_steps_complete(storage, root):
-    from fastapi.testclient import TestClient
-
-    from api.deps import get_internal_token, get_storage
-    from api.main import create_app
-
-    storage.create_project("Demo", root)
-    storage.create_execution(root, "Demo", "e7", "t7")
-    storage.seed_steps(root, "Demo", "e7",
-                       [{"title": "a"}, {"title": "b"}])
-
-    app = create_app()
-    app.dependency_overrides[get_storage] = lambda: storage
-    app.dependency_overrides[get_internal_token] = lambda: "tok"
-    client = TestClient(app, raise_server_exceptions=False)
-    hdr = {"X-Promptly-Token": "tok"}
-    q = {"project": "Demo"}
-
-    # steps incomplete -> report_done is rejected, nothing finalized
-    r = client.post("/internal/executions/e7/report-done", params=q,
-                    headers=hdr, json={"summary": "done"})
-    assert r.status_code == 200
-    assert r.json()["complete"] is False
-    assert "a" in r.json()["message"] and "b" in r.json()["message"]
-    assert not storage.read_progress(root, "Demo", "e7").done_summary
-
-    # finish both steps, then it succeeds
-    client.post("/internal/executions/e7/steps/complete", params=q,
-                headers=hdr, json={"title": "a"})
-    client.post("/internal/executions/e7/steps/complete", params=q,
-                headers=hdr, json={"title": "b"})
-    r = client.post("/internal/executions/e7/report-done", params=q,
-                    headers=hdr, json={"summary": "all done"})
-    assert r.json()["complete"] is True
-    assert storage.read_progress(root, "Demo", "e7").done_summary == "all done"
 
 
 # ── run loop finalize ────────────────────────────────────────────────────────────
@@ -206,10 +169,14 @@ async def test_run_loop_completes_and_commits(storage, root, tmp_path, monkeypat
 
     em = ExecutionManager(storage, SSEBus(), claude=None)
 
-    # Fake the CLI: emit a stream-json init line (so session id is captured) + exit 0.
+    # Fake one CLI turn: emit a stream-json init line (session id) + a result event
+    # carrying a `done` structured-output command, then exit 0. No steps seeded, so
+    # `done` finalizes immediately.
     fake = (
-        "import json,sys; "
-        "print(json.dumps({'type':'system','subtype':'init','session_id':'sess-9'}))"
+        "import json; "
+        "print(json.dumps({'type':'system','subtype':'init','session_id':'sess-9'})); "
+        "print(json.dumps({'type':'result','session_id':'sess-9',"
+        "'structured_output':{'type':'done','summary':'all done'}}))"
     )
 
     class FakeClaude:
@@ -224,6 +191,7 @@ async def test_run_loop_completes_and_commits(storage, root, tmp_path, monkeypat
     prog = storage.read_progress(root, "Demo", "e3")
     assert prog.status == ProgressStatus.completed.value
     assert prog.session_id == "sess-9"
+    assert prog.done_summary == "all done"
     refreshed = storage.get_entry(root, "Demo", "tasks", task.id)
     assert refreshed.status == TaskStatus.in_review.value
 
@@ -301,11 +269,14 @@ async def test_permission_allow_resumes_with_grant(storage, root, monkeypatch):
     assert "approved" in captured["prompt"].lower()
 
 
-async def test_ensure_running_resumes_dead_session(storage, root, monkeypatch):
+async def test_resume_continues_with_session(storage, root, monkeypatch):
     storage.create_project("Demo", root)
-    storage.create_execution(root, "Demo", "e8", "t8")
+    task = storage.create_entry(root, "Demo", type="task", display_name="T8")
+    storage.create_execution(root, "Demo", "e8", task.id)
     storage.set_execution_meta(root, "Demo", "e8", session_id="sess-D")
-    storage.set_execution_status(root, "Demo", "e8", ProgressStatus.running)
+    # in an error state with the task flagged
+    storage.set_execution_status(root, "Demo", "e8", ProgressStatus.failed, error="boom")
+    storage.patch_metadata(root, "Demo", "tasks", task.id, {"executionError": True})
 
     em = ExecutionManager(storage, SSEBus(), claude=None)
     calls = {}
@@ -315,53 +286,55 @@ async def test_ensure_running_resumes_dead_session(storage, root, monkeypatch):
 
     monkeypatch.setattr(em, "_run", fake_run)
     monkeypatch.setattr(em, "_sync_for_resume", lambda *a: "")
-    # running but nothing in _active -> the process is dead, resume it
-    await em.ensure_running(root, "Demo", "e8")
+    monkeypatch.setattr("api.services.execution.read_transcript_command", lambda sid: None)
+    await em.resume(root, "Demo", "e8")
     import asyncio
     await asyncio.sleep(0)
 
-    assert calls["session_id"] == "sess-D"
-    assert calls["eid"] == "e8"
+    assert calls["session_id"] == "sess-D" and calls["eid"] == "e8"
     assert "continue" in calls["prompt"].lower()
+    # the task error flag is cleared on resume
+    assert storage.get_entry(root, "Demo", "tasks", task.id).execution_error is False
 
 
-async def test_ensure_running_no_session_fails(storage, root, monkeypatch):
+async def test_resume_pauses_on_transcript_question(storage, root, monkeypatch):
     storage.create_project("Demo", root)
-    storage.create_execution(root, "Demo", "e9", "t9")
+    storage.create_execution(root, "Demo", "e8b", "t8b")
+    storage.set_execution_meta(root, "Demo", "e8b", session_id="sess-Q")
+    storage.set_execution_status(root, "Demo", "e8b", ProgressStatus.failed, error="boom")
+
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    called = {"run": False}
+
+    async def fake_run(*a, **k):
+        called["run"] = True
+
+    monkeypatch.setattr(em, "_run", fake_run)
+    # the transcript shows the run ended on a question -> resume should pause, not re-run
+    monkeypatch.setattr("api.services.execution.read_transcript_command",
+                        lambda sid: {"type": "question", "question": "Which DB?"})
+    state = await em.resume(root, "Demo", "e8b")
+
+    assert called["run"] is False
+    assert state.status == ProgressStatus.awaiting_input.value
+    assert state.pending_questions[-1].question == "Which DB?"
+
+
+def test_mark_orphans_interrupted(storage, root):
+    storage.create_project("Demo", root)
+    task = storage.create_entry(root, "Demo", type="task", display_name="Orphan")
+    storage.create_execution(root, "Demo", "e9", task.id)
+    storage.set_execution_meta(root, "Demo", "e9", session_id="sess-Z")
     storage.set_execution_status(root, "Demo", "e9", ProgressStatus.running)
 
     em = ExecutionManager(storage, SSEBus(), claude=None)
-    called = {"run": False}
+    em.mark_orphans_interrupted()
 
-    async def fake_run(*a, **k):
-        called["run"] = True
-
-    monkeypatch.setattr(em, "_run", fake_run)
-    state = await em.ensure_running(root, "Demo", "e9")
-
-    assert called["run"] is False
-    assert state.status == ProgressStatus.failed.value
-    assert "no session" in (state.error or "").lower()
-
-
-async def test_ensure_running_noop_when_active(storage, root, monkeypatch):
-    storage.create_project("Demo", root)
-    storage.create_execution(root, "Demo", "e10", "t10")
-    storage.set_execution_meta(root, "Demo", "e10", session_id="sess-E")
-    storage.set_execution_status(root, "Demo", "e10", ProgressStatus.running)
-
-    em = ExecutionManager(storage, SSEBus(), claude=None)
-    em._active.add("e10")  # a run is already live/starting
-    called = {"run": False}
-
-    async def fake_run(*a, **k):
-        called["run"] = True
-
-    monkeypatch.setattr(em, "_run", fake_run)
-    state = await em.ensure_running(root, "Demo", "e10")
-
-    assert called["run"] is False
-    assert state.status == ProgressStatus.running.value
+    prog = storage.read_progress(root, "Demo", "e9")
+    assert prog.status == ProgressStatus.failed.value
+    assert prog.session_id == "sess-Z"  # session kept for Try again
+    assert "interrupted" in (prog.error or "").lower()
+    assert storage.get_entry(root, "Demo", "tasks", task.id).execution_error is True
 
 
 # ── build_run_command shape (no CLI spawned) ─────────────────────────────────────
@@ -379,16 +352,13 @@ def test_build_run_command_scoped_default(storage, root):
         root, "Demo", execution_id="e9", worktree="/tmp/wt", prompt="go", session_id="sess-Z",
     )
     args = spec.args
-    assert "stream-json" in args and "--strict-mcp-config" in args
+    assert "stream-json" in args
     assert "--resume" in args and "sess-Z" in args
     assert "auto" in args  # unattended, no prompts
 
-    # The promptly progress tools must be allow-listed (otherwise an MCP call stalls
-    # waiting for approval that never comes in headless auto mode).
-    allowed = args[args.index("--allowedTools") + 1:]
-    for tool in ("mcp__promptly__complete_step", "mcp__promptly__revise_steps",
-                 "mcp__promptly__ask_question", "mcp__promptly__report_done"):
-        assert tool in allowed
+    # Progress is via --json-schema structured output, not MCP.
+    assert "--json-schema" in args
+    assert "--mcp-config" not in args and "--strict-mcp-config" not in args
 
     # read scope = the worktree (cwd) only — no --add-dir of repo/project/docs/tasks
     add_dirs = [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
@@ -512,9 +482,9 @@ def test_hook_bash_allowlist(tmp_path):
     reason="set PROMPTLY_CLI_TEST=1 to run the real execution-engine smoke test",
 )
 def test_real_execution_end_to_end(tmp_path):
-    """Exercises the whole engine against the real CLI: worktree -> build session ->
-    MCP progress callbacks -> report_done -> commit -> in_review. Needs a running
-    server so the MCP/hook callbacks can reach it."""
+    """Exercises the whole engine against the real CLI: worktree -> build turn loop ->
+    structured-output `done` command -> commit -> in_review. Needs a running server so
+    the hook callback can reach it."""
     import os
     import time
     from pathlib import Path

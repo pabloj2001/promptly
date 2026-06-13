@@ -26,6 +26,11 @@ from ..storage import StorageService, NotFoundError
 from ..storage import paths
 from . import worktree
 from .claude import ClaudeService
+from .exec_protocol import (
+    activity_summary,
+    command_from_result_event,
+    read_transcript_command,
+)
 
 
 class SSEBus:
@@ -172,16 +177,72 @@ class ExecutionManager:
         )
         await self._run(root, project, execution_id, task_id, prompt)
 
-    # ── Run loop ─────────────────────────────────────────────────────────────────
+    # ── Run loop (turn-based, --json-schema protocol) ────────────────────────────
+    #
+    # Each turn is one `claude -p` process that does real work with its tools and
+    # returns ONE structured-output command (see api/services/exec_protocol.py). We
+    # dispatch it and resume for the next turn — entirely backend-driven, so the loop
+    # progresses whether or not a Build tab is open. The loop only stops on a pause
+    # (question/issue/permission), completion (done), cancel, or an error (the user
+    # resumes errors with "Try again").
+
+    _MAX_TURNS = 200  # hard safety cap on turns per _run invocation
 
     async def _run(
         self, root: str, project: str, execution_id: str, task_id: str,
         prompt: str, *, session_id: Optional[str] = None,
     ) -> None:
-        """Spawn one build-session process and drive it to its next pause point.
+        sid = session_id
+        next_prompt = prompt
+        for _ in range(self._MAX_TURNS):
+            self._interrupt.pop(execution_id, None)
+            state = self.storage.set_execution_status(
+                root, project, execution_id, ProgressStatus.running)
+            self.publish_progress(execution_id, "status", state)
 
-        Returns when the process exits; finalization depends on *why* it exited
-        (report_done / awaiting input / natural exit / crash / cancel)."""
+            turn = await self._run_turn(
+                root, project, execution_id, next_prompt, sid)
+            if turn["session_id"] and not sid:
+                sid = turn["session_id"]
+                self.storage.set_execution_meta(
+                    root, project, execution_id, session_id=sid)
+
+            reason = self._interrupt.pop(execution_id, None)
+            if reason == "input":
+                return  # paused for a permission request (recorded by the hook)
+            if reason == "cancel":
+                state = self.storage.set_execution_status(
+                    root, project, execution_id, ProgressStatus.failed,
+                    error="cancelled by user")
+                self.publish_progress(execution_id, "status", state)
+                return
+
+            cmd = turn["command"]
+            if cmd is None:
+                cmd = read_transcript_command(sid) if sid else None
+            if cmd is None:
+                # The turn ended without a valid command — Anthropic/connectivity/CLI
+                # error or a crash. Surface it; the user resumes with "Try again".
+                self._set_error(
+                    root, project, execution_id, task_id,
+                    turn["stderr"] or "the AI didn't return a valid response "
+                    f"(exit {turn['returncode']}).")
+                return
+
+            action = self._handle_command(root, project, execution_id, task_id, cmd)
+            if action is None:
+                return  # paused (question/issue) or finished (done) or errored
+            next_prompt = action  # a continue prompt for the next turn
+
+        self._set_error(root, project, execution_id, task_id,
+                        "stopped after too many turns without finishing.")
+
+    async def _run_turn(
+        self, root: str, project: str, execution_id: str, prompt: str,
+        session_id: Optional[str],
+    ) -> dict:
+        """Spawn one build turn; stream its live activity; return its command +
+        session id + exit info."""
         wt = str(paths.worktree_path(root, project, execution_id))
         granted = [p for p in self.storage.read_progress(root, project, execution_id)
                    .pending_permissions if p.decision == "allow"]
@@ -190,28 +251,30 @@ class ExecutionManager:
             prompt=prompt, session_id=session_id, granted=granted,
         )
 
-        self._interrupt.pop(execution_id, None)
-        state = self.storage.set_execution_status(
-            root, project, execution_id, ProgressStatus.running
-        )
-        self.publish_progress(execution_id, "status", state)
-
         proc = await asyncio.create_subprocess_exec(
             *spec.args, cwd=spec.cwd, env=spec.env,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         self._procs[execution_id] = proc
 
-        captured = {"session": session_id is not None}
+        captured: dict = {"session_id": session_id, "command": None}
         stderr_buf: list[bytes] = []
 
         def on_event(evt: dict) -> None:
-            if not captured["session"]:
-                sid = evt.get("session_id")
-                if sid:
-                    self.storage.set_execution_meta(
-                        root, project, execution_id, session_id=sid)
-                    captured["session"] = True
+            sid = evt.get("session_id")
+            if sid:
+                captured["session_id"] = sid
+            if evt.get("type") == "assistant":
+                act = activity_summary(evt)
+                if act:
+                    self.storage.set_activity(root, project, execution_id, act)
+                    self.publish_progress(
+                        execution_id, "progress",
+                        self.storage.read_progress(root, project, execution_id))
+            if evt.get("type") == "result":
+                cmd = command_from_result_event(evt)
+                if cmd is not None:
+                    captured["command"] = cmd
 
         async def drain_stdout() -> None:
             assert proc.stdout is not None
@@ -234,34 +297,76 @@ class ExecutionManager:
         finally:
             self._procs.pop(execution_id, None)
 
-        reason = self._interrupt.pop(execution_id, None)
-        stderr = b"".join(stderr_buf).decode(errors="replace")[-2000:]
-        await self._finalize(root, project, execution_id, task_id,
-                             reason, proc.returncode, stderr)
+        return {
+            "command": captured["command"],
+            "session_id": captured["session_id"],
+            "returncode": proc.returncode,
+            "stderr": b"".join(stderr_buf).decode(errors="replace")[-2000:],
+        }
 
-    async def _finalize(
-        self, root: str, project: str, execution_id: str, task_id: str,
-        reason: Optional[str], returncode: Optional[int], stderr: str,
+    def _handle_command(
+        self, root: str, project: str, execution_id: str, task_id: str, cmd: dict,
+    ) -> Optional[str]:
+        """Apply a structured-output command. Returns a continue-prompt to keep looping,
+        or None to stop the loop (paused / done / errored)."""
+        ctype = cmd.get("type")
+        if ctype == "thinking":
+            text = str(cmd.get("text", "")).strip()
+            if text:
+                state = self.storage.set_activity(root, project, execution_id, text)
+                self.publish_progress(execution_id, "progress", state)
+            return "Continue."
+
+        if ctype == "step_complete":
+            state = self.storage.complete_step(
+                root, project, execution_id, title=cmd.get("title"))
+            self.publish_progress(execution_id, "steps", state)
+            return ("Step recorded. Continue with the next step; return one command when "
+                    "you finish it, hit a blocker, or are done.")
+
+        if ctype == "revise_steps":
+            steps = cmd.get("steps") if isinstance(cmd.get("steps"), list) else []
+            state = self.storage.revise_steps(root, project, execution_id, steps)
+            self.publish_progress(execution_id, "steps", state)
+            return "Plan updated. Continue with the in-progress step."
+
+        if ctype in ("question", "issue"):
+            text = str(cmd.get("question") if ctype == "question" else cmd.get("issue") or "")
+            detail = str(cmd.get("detail", "")).strip()
+            if detail and ctype == "issue":
+                text = f"{text}\n\n{detail}".strip()
+            state, _ = self.storage.add_question(
+                root, project, execution_id, text or f"(empty {ctype})", kind=ctype)
+            self.publish_progress(execution_id, "question", state)
+            return None  # pause for the user
+
+        if ctype == "done":
+            prog = self.storage.read_progress(root, project, execution_id)
+            incomplete = [s.title for s in (prog.steps if prog else [])
+                          if s.status not in ("done", "skipped")]
+            if incomplete:
+                return ("You reported done, but these steps are still incomplete: "
+                        + ", ".join(incomplete) + ". Complete them (return step_complete "
+                        "for each) or revise the plan (revise_steps), then return done.")
+            self._complete(root, project, execution_id, task_id,
+                           str(cmd.get("summary", "")))
+            return None  # finished
+
+        # Unknown command type — treat as a non-fatal nudge.
+        return "Continue. Return one of the documented commands when you reach a reporting point."
+
+    def _set_error(
+        self, root: str, project: str, execution_id: str, task_id: str, message: str,
     ) -> None:
-        if reason == "input":
-            # Paused for the user; status/pending already recorded by the callback.
-            return
-        if reason == "cancel":
-            state = self.storage.set_execution_status(
-                root, project, execution_id, ProgressStatus.failed,
-                error="cancelled by user")
-            self.publish_progress(execution_id, "status", state)
-            return
-
-        done = self.storage.read_progress(root, project, execution_id).done_summary
-        if reason == "done" or done or returncode == 0:
-            self._complete(root, project, execution_id, task_id, done or "")
-            return
-
-        # Crashed / non-zero exit with no pause.
+        """Put the execution into a user-visible error state (no auto-resume). Flags the
+        task so the Build sidebar highlights it red; the user resumes with Try again."""
         state = self.storage.set_execution_status(
-            root, project, execution_id, ProgressStatus.failed,
-            error=stderr or f"build process exited {returncode}")
+            root, project, execution_id, ProgressStatus.failed, error=message)
+        try:
+            self.storage.patch_metadata(
+                root, project, "tasks", task_id, {"executionError": True})
+        except NotFoundError:
+            pass
         self.publish_progress(execution_id, "status", state)
 
     def _complete(
@@ -270,6 +375,8 @@ class ExecutionManager:
         wt = str(paths.worktree_path(root, project, execution_id))
         task = self.storage.get_entry(root, project, "tasks", task_id)
         message = f"{task.name}\n\n{summary}".strip() if summary else task.name
+        if summary:
+            self.storage.set_done_summary(root, project, execution_id, summary)
         try:
             worktree.commit_all(wt, message)
         except worktree.GitError:
@@ -277,6 +384,8 @@ class ExecutionManager:
         state = self.storage.set_execution_status(
             root, project, execution_id, ProgressStatus.completed)
         self.storage.set_status(root, project, task_id, TaskStatus.in_review)
+        self.storage.patch_metadata(
+            root, project, "tasks", task_id, {"executionError": False})
         self.publish_progress(execution_id, "status", state)
 
     # ── Base sync (07) ─────────────────────────────────────────────────────────
@@ -323,10 +432,13 @@ class ExecutionManager:
             raise NotFoundError(f"execution {execution_id} not found")
         _, q = self.storage.answer_question(root, project, execution_id, question_id, answer)
         sync = self._sync_for_resume(root, project, execution_id)
-        prompt = sync + (
-            "The user answered your question.\n\n"
-            f"Question: {q.question}\nAnswer: {answer}\n\nContinue building the task."
-        )
+        if q.kind == "issue":
+            lead = (f"Regarding the issue you reported (\"{q.question}\"), the user "
+                    f"responded:\n\n{answer}\n\nAct on it and continue building the task.")
+        else:
+            lead = ("The user answered your question.\n\n"
+                    f"Question: {q.question}\nAnswer: {answer}\n\nContinue building the task.")
+        prompt = sync + lead
         self._spawn_tracked(execution_id, self._run(root, project, execution_id,
                             prog.task_id, prompt, session_id=prog.session_id))
         return self.storage.read_progress(root, project, execution_id)
@@ -349,8 +461,8 @@ class ExecutionManager:
         else:
             prompt = sync + (
                 f"The user denied your request to use {pr.tool}. Do not attempt it "
-                "again; find another approach, or call ask_question if you are stuck. "
-                "Continue."
+                "again; find another approach, or return a question command if you are "
+                "stuck. Continue."
             )
         self._spawn_tracked(execution_id, self._run(root, project, execution_id,
                             prog.task_id, prompt, session_id=prog.session_id))
@@ -368,40 +480,60 @@ class ExecutionManager:
         sync = self._sync_for_resume(root, project, execution_id)
         prompt = sync + (
             "The user reviewed your work and left feedback:\n\n"
-            f"{message}\n\nAddress it, then call report_done again when finished."
+            f"{message}\n\nAddress it, then return a done command when finished."
         )
         self._spawn_tracked(execution_id, self._run(root, project, execution_id,
                             prog.task_id, prompt, session_id=prog.session_id))
         return self.storage.read_progress(root, project, execution_id)
 
-    async def ensure_running(
-        self, root: str, project: str, execution_id: str
-    ) -> ProgressState:
-        """Liveness monitor + auto-recover (polled by the client on visit + interval).
-
-        If the execution is marked ``running`` but no run is actually live (its process
-        died without finalizing — e.g. the server restarted), resume it with the same
-        session id and tell it to continue. If there's no session to resume, mark it
-        failed. A session that's gone surfaces via the normal failure path: the resumed
-        ``claude --resume`` exits non-zero and ``_finalize`` records the error."""
+    async def resume(self, root: str, project: str, execution_id: str) -> ProgressState:
+        """The "Try again" action: clear the error and resume the loop. If a session
+        exists, continue it (reconciling a trailing question/issue from the transcript
+        into a pause instead); otherwise (e.g. planning failed) re-plan + run."""
         prog = self.storage.read_progress(root, project, execution_id)
         if prog is None:
             raise NotFoundError(f"execution {execution_id} not found")
-        if prog.status != ProgressStatus.running.value or execution_id in self._active:
-            return prog  # alive, paused, or already terminal — nothing to do
+        if execution_id in self._active:
+            return prog  # already running
+
+        try:
+            self.storage.patch_metadata(
+                root, project, "tasks", prog.task_id, {"executionError": False})
+        except NotFoundError:
+            pass
 
         if not prog.session_id:
+            task = self.storage.get_entry(root, project, "tasks", prog.task_id)
+            wt = str(paths.worktree_path(root, project, execution_id))
+            deps = [self.storage.get_entry(root, project, "tasks", d).name
+                    for d in task.depends_on
+                    if (self.storage.read_metadata(root, project, "tasks").get(d))]
+            self._spawn_tracked(execution_id, self._plan_then_run(
+                root, project, execution_id, prog.task_id,
+                task.name, task.file, wt, deps))
+            return self.storage.read_progress(root, project, execution_id)
+
+        # Reconcile: if the last recorded command was a question/issue, pause instead.
+        cmd = read_transcript_command(prog.session_id)
+        if cmd and cmd.get("type") in ("question", "issue"):
+            pending = [q for q in prog.pending_questions if q.answer is None]
+            text = str(cmd.get("question") if cmd["type"] == "question"
+                       else cmd.get("issue") or "")
+            if not any(q.question == text for q in pending):
+                state, _ = self.storage.add_question(
+                    root, project, execution_id, text or f"(empty {cmd['type']})",
+                    kind=cmd["type"])
+                self.publish_progress(execution_id, "question", state)
+                return state
             state = self.storage.set_execution_status(
-                root, project, execution_id, ProgressStatus.failed,
-                error="the build process is no longer running and there is no session "
-                "to resume — start a new execution")
-            self.publish_progress(execution_id, "status", state)
+                root, project, execution_id, ProgressStatus.awaiting_input)
+            self.publish_progress(execution_id, "question", state)
             return state
 
         prompt = self._sync_for_resume(root, project, execution_id) + (
             "The previous build session was interrupted before finishing. Continue "
-            "building the task from where you left off; call complete_step as you finish "
-            "each step and report_done once every step is complete."
+            "building the task from where you left off; return one command when you "
+            "finish a step, hit a blocker, or are done."
         )
         self._spawn_tracked(execution_id, self._run(
             root, project, execution_id, prog.task_id,
@@ -454,11 +586,20 @@ class ExecutionManager:
         return worktree.diff(wt, prog.base_sha)
 
     # ── Startup recovery ─────────────────────────────────────────────────────────
-    #
-    # In-flight runs die with the server, but we no longer fail them on startup: a
-    # `running` execution whose process is gone is recovered on demand by
-    # `ensure_running` (the client polls it on visit + interval), which resumes the
-    # session and continues. `awaiting_input` executions stay paused for the user.
+
+    def mark_orphans_interrupted(self) -> None:
+        """In-flight runs die with the server. On startup, flip any execution still
+        marked ``running`` to an error state (keeping its session) so the user can
+        resume it with "Try again"; the task is flagged red in the sidebar.
+        ``awaiting_input`` executions stay paused."""
+        for proj in self.storage.list_projects():
+            for eid in self.storage.list_executions(proj.root, proj.name):
+                prog = self.storage.read_progress(proj.root, proj.name, eid)
+                if prog and prog.status == ProgressStatus.running.value:
+                    self._set_error(
+                        proj.root, proj.name, eid, prog.task_id,
+                        "interrupted — the server restarted while this was running. "
+                        "Click Try again to resume.")
 
     # ── SSE stream ───────────────────────────────────────────────────────────────
 

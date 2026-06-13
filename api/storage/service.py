@@ -686,14 +686,23 @@ class StorageService:
         return self._mutate_progress(root, name, execution_id, fn)
 
     def add_question(
-        self, root: str, name: str, execution_id: str, question: str
+        self, root: str, name: str, execution_id: str, question: str, *,
+        kind: str = "question",
     ) -> tuple[ProgressState, Question]:
-        q = Question(id=_new_id(), question=question, asked_at=_now())
+        q = Question(id=_new_id(), question=question, kind=kind, asked_at=_now())
 
         def fn(s: ProgressState) -> None:
             s.pending_questions.append(q)
             s.status = ProgressStatus.awaiting_input.value
         return self._mutate_progress(root, name, execution_id, fn), q
+
+    def set_activity(
+        self, root: str, name: str, execution_id: str, activity: str
+    ) -> ProgressState:
+        """Record the latest live line-of-thinking (compact, overwritten each event)."""
+        def fn(s: ProgressState) -> None:
+            s.activity = activity
+        return self._mutate_progress(root, name, execution_id, fn)
 
     def answer_question(
         self, root: str, name: str, execution_id: str, question_id: str, answer: str

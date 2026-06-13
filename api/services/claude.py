@@ -28,6 +28,7 @@ from typing import Optional
 from ..models import CamelModel, Comment, DocType, PermissionRequest
 from ..storage import StorageService
 from ..storage import paths
+from .exec_protocol import COMMAND_SCHEMA
 from .permissions import build_cli_permissions
 from .prompts import PromptLibrary
 
@@ -35,21 +36,11 @@ from .prompts import PromptLibrary
 _BODY_BUDGET = 200_000
 
 # Promptly's own app root (the dir containing the ``api`` package) — used as
-# PYTHONPATH so the CLI's child helpers (MCP server, hook) can import ``api.*``.
+# PYTHONPATH so the CLI's child helpers (the PreToolUse hook) can import ``api.*``.
 _APP_ROOT = Path(__file__).resolve().parents[2]
 
 # Edit-family tool names the PreToolUse hook gates by path.
 _EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
-
-# The progress tools the build session calls back through (api/mcp_server.py). They
-# must be allow-listed so the CLI lets the model call them without an approval prompt
-# (under --permission-mode auto an un-allowed MCP call stalls in headless mode).
-_MCP_TOOLS = [
-    "mcp__promptly__complete_step",
-    "mcp__promptly__revise_steps",
-    "mcp__promptly__ask_question",
-    "mcp__promptly__report_done",
-]
 
 
 @dataclass
@@ -326,29 +317,20 @@ class ClaudeService:
             env["PROMPTLY_WORKTREE"] = worktree
             env["PROMPTLY_HOOK_MODE"] = hook_mode
 
-        mcp_config = {
-            "mcpServers": {
-                "promptly": {
-                    "command": self.python,
-                    "args": ["-m", "api.mcp_server"],
-                    "env": {**callback_env, "PYTHONPATH": str(_APP_ROOT)},
-                }
-            }
-        }
-
+        # Progress is reported via a --json-schema structured-output command per turn
+        # (parsed from the stream + transcript), not MCP. See api/services/exec_protocol.py.
         args = [
             self.cli, "-p", prompt,
             "--output-format", "stream-json", "--verbose",
             "--model", self.default_model,
             "--settings", json.dumps(settings),
             "--permission-mode", cli.permission_mode,
-            "--mcp-config", json.dumps(mcp_config),
-            "--strict-mcp-config",
+            "--json-schema", json.dumps(COMMAND_SCHEMA),
         ]
         for d in read_dirs:
             args += ["--add-dir", d]
-        # Always allow the promptly progress tools; add any per-run granted edit tools.
-        args += ["--allowedTools", *_MCP_TOOLS, *extra_tools]
+        if extra_tools:  # per-run granted edit tools (ask_fallback mode)
+            args += ["--allowedTools", *extra_tools]
         if session_id:
             args += ["--resume", session_id]
         return RunSpec(args=args, env=env, cwd=worktree)

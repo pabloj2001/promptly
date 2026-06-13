@@ -69,15 +69,15 @@ async def stream(
     return EventSourceResponse(event_gen())
 
 
-@router.post("/{execution_id}/ensure-running", response_model=ProgressState)
-async def ensure_running(
+@router.post("/{execution_id}/resume", response_model=ProgressState)
+async def resume(
     execution_id: str,
     ap: ActiveProject = Depends(get_active_project),
     em: ExecutionManager = Depends(get_execution),
 ):
-    """Liveness monitor: if the run is marked running but its process is gone, resume
-    it (same session, continue). Polled by the client on visit + on an interval."""
-    return await em.ensure_running(ap.root, ap.name, execution_id)
+    """The "Try again" action: clear the error and resume the build loop (same session,
+    continue). Used after an execution lands in an error state."""
+    return await em.resume(ap.root, ap.name, execution_id)
 
 
 @router.post("/{execution_id}/answer", response_model=ProgressState)
