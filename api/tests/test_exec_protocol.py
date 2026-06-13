@@ -88,14 +88,6 @@ def test_handle_step_complete_continues(storage, root):
     assert prog.steps[0].status == "done" and prog.steps[1].status == "in_progress"
 
 
-def test_handle_last_step_complete_asks_for_done(storage, root):
-    em, tid = _em_with_exec(storage, root, steps=[{"title": "a"}])
-    out = em._handle_command(root, "Demo", "x1", tid,
-                             {"type": "step_complete", "step": 1})
-    assert out is not None and "done" in out.lower()
-    assert storage.read_progress(root, "Demo", "x1").steps[0].status == "done"
-
-
 def test_handle_question_pauses(storage, root):
     em, tid = _em_with_exec(storage, root)
     out = em._handle_command(root, "Demo", "x1", tid,

@@ -42,7 +42,10 @@ structured output:
 
 - `{"type":"step_complete","step":<number>}` — the moment you finish the step you were told to
   work on. Use its **number** from the plan above (e.g. `"step": 1`). You'll be resumed and told
-  the next step to work on.
+  the next step. **When you complete the FINAL step, add a short `"summary"` of the whole task**
+  (`{"type":"step_complete","step":<last>,"summary":"..."}`): completing the last step
+  automatically finalizes the task — Promptly commits your worktree and moves it to review. There
+  is no separate "done" step.
 - `{"type":"revise_steps","steps":[{"title":"...","detail":"<optional>","done":true|false}]}` —
   if the plan is wrong: provide the ENTIRE updated list, with `done:true` on already-finished
   steps.
@@ -51,14 +54,11 @@ structured output:
 - `{"type":"issue","issue":"...","detail":"<optional>"}` — when you hit a blocker you cannot
   resolve (e.g. a tool/network/credentials failure). You will pause and be resumed with guidance.
 - `{"type":"thinking","text":"..."}` — optional: surface a short progress note; you'll continue.
-- `{"type":"done","summary":"..."}` — ONLY after you've completed the FINAL step. Promptly commits
-  your worktree and moves the task to review. If any step is still incomplete this is rejected and
-  you're told what remains.
 
 Rules:
 - Work on the current step only, then return **one** command per turn — it is your turn's output.
-- `step_complete` refers to a step by its **number**; report `done` only after the last step.
-- After `question`/`issue`/`done`, stop — you'll be resumed if needed.
+- `step_complete` refers to a step by its **number**; the task finishes when the last step is done.
+- After `question`/`issue`, stop — you'll be resumed if needed.
 
 Begin: read the project spec + relevant source, then work ONLY on **step 1** and, when it's
 finished, return `step_complete` with `"step": 1`.

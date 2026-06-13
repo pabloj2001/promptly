@@ -114,16 +114,19 @@ drains `stream-json` to (a) capture `session_id`, (b) surface the live **activit
   `revise_steps` replaces the whole plan (preserving ids/timestamps + done state by title) →
   resume; `thinking` updates the activity → resume; `question`/`issue` records a pending question
   (with `kind`; an `issue` also flags the task `executionBlocked` so the sidebar surfaces it) →
-  **pause** (`awaiting_input`); `done` finalizes (below).
+  **pause** (`awaiting_input`). **There is no explicit `done` command** — completing the *last*
+  step finalizes the task (below); the optional `summary` on that final `step_complete` is kept as
+  the review summary. (A `done` command is still accepted defensively if the model emits one.)
 - **Command source:** the live `structured_output`; if a turn's process is lost (server restart)
   the command is recovered from the transcript (`~/.claude/projects/*/<session_id>.jsonl`, a
   `tool_use` named `StructuredOutput`).
 - **Session id:** captured from `stream-json` and persisted as soon as known (enables `--resume`).
-- **Completion (`done`):** **guarded** — if any step is still `done`/`skipped`-incomplete the
-  loop resumes the session with the list of remaining steps (it must finish or revise first).
-  Once all steps are complete it records `doneSummary`, **commits the worktree once** with a
-  generated message, sets `progress.status = completed`, task `status = in_review`, clears the
-  task's error flag, emits `status` SSE.
+- **Completion:** when the final step is completed (`_advance_or_finish` sees no remaining
+  incomplete steps), the loop records `doneSummary` (from the step's optional `summary`),
+  **commits the worktree once** with a generated message, sets `progress.status = completed`, task
+  `status = in_review`, clears the task's error/blocked flags, emits `status` SSE, and stops. A
+  defensive explicit `done` is guarded the same way — rejected with the remaining steps if any are
+  incomplete.
 - **Error (no auto-resume):** a turn that returns no valid command (Anthropic/connectivity/CLI
   failure) → `progress.status = failed` with the message, the task's `executionError` flag set
   (sidebar shows red); the user resumes with **Try again** or sends feedback. `cancel` →

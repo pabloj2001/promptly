@@ -261,6 +261,30 @@ def test_complete_step_fuzzy_and_fallback(storage, root):
     assert s.steps[2].status == "in_progress"
 
 
+def test_last_step_complete_finalizes(storage, root, tmp_path):
+    """Completing the final step finalizes the task (commit + in_review) with no separate
+    `done` command; the optional summary on that step_complete is kept."""
+    _seed_repo(root)
+    storage.create_project("Demo", root)
+    task = storage.create_entry(root, "Demo", type="task", display_name="Fin")
+    storage.create_execution(root, "Demo", "efin", task.id)
+    from api.storage import paths
+    wt = str(paths.worktree_path(root, "Demo", "efin"))
+    base = worktree.add_worktree(root, wt, worktree.branch_name("fin", "efin"))
+    storage.set_execution_meta(root, "Demo", "efin", base_sha=base)
+    storage.seed_steps(root, "Demo", "efin", [{"title": "a"}, {"title": "b"}])
+
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    out = em._handle_command(root, "Demo", "efin", task.id, {"type": "step_complete", "step": 1})
+    assert out is not None and "step 2 of 2" in out  # not finalized yet
+    out = em._handle_command(root, "Demo", "efin", task.id,
+                             {"type": "step_complete", "step": 2, "summary": "all good"})
+    assert out is None  # finalized -> loop stops
+    prog = storage.read_progress(root, "Demo", "efin")
+    assert prog.status == ProgressStatus.completed.value and prog.done_summary == "all good"
+    assert storage.get_entry(root, "Demo", "tasks", task.id).status == TaskStatus.in_review.value
+
+
 def test_complete_step_by_number(storage, root):
     storage.create_project("Demo", root)
     storage.create_execution(root, "Demo", "en", "tn")

@@ -343,24 +343,39 @@ class ExecutionManager:
             "stderr": b"".join(stderr_buf).decode(errors="replace")[-2000:],
         }
 
+    def _advance_or_finish(
+        self, root: str, project: str, execution_id: str, task_id: str,
+        state: ProgressState, *, summary: str = "", just_completed: bool = False,
+    ) -> Optional[str]:
+        """If every step is done/skipped, finalize the task (commit + in_review) and stop
+        the loop (return None); otherwise return a continue-prompt pointing at the next
+        step. This replaces the explicit `done` command — finishing the last step IS done."""
+        remaining = [s for s in state.steps if s.status not in ("done", "skipped")]
+        if state.steps and not remaining:
+            self._complete(root, project, execution_id, task_id, summary)
+            return None
+        return self._next_step_prompt(state, just_completed=just_completed)
+
     def _next_step_prompt(self, state: ProgressState, *, just_completed: bool = False) -> str:
         """Continue-prompt that points Claude at exactly the current (in_progress) step
-        by number, so it works one step at a time. When none remain, ask it to wrap up."""
+        by number, so it works one step at a time."""
         steps = state.steps
         active = next(
             ((i, s) for i, s in enumerate(steps) if s.status == "in_progress"), None)
         lead = "That step is done. " if just_completed else ""
         if active is None:
-            return (lead + "All steps are complete. Do a final check of your work, then "
-                    "return a done command with a short summary.")
+            return (lead + "Finish any remaining work; the task is finalized automatically "
+                    "once all steps are complete.")
         idx, s = active
         total = len(steps)
         line = f"step {idx + 1} of {total}: {s.title}"
         if s.detail:
             line += f" — {s.detail}"
         return (lead + f"Now work ONLY on {line}. Don't work ahead. When you finish it, "
-                f'return step_complete with "step": {idx + 1}. If that was the final step, '
-                "return done instead.")
+                f'return step_complete with "step": {idx + 1}'
+                + (' (include a short "summary" since it\'s the final step).'
+                   if idx + 1 == total else ".")
+                )
 
     def _handle_command(
         self, root: str, project: str, execution_id: str, task_id: str, cmd: dict,
@@ -380,13 +395,17 @@ class ExecutionManager:
                 root, project, execution_id,
                 number=cmd.get("step"), title=cmd.get("title"))
             self.publish_progress(execution_id, "steps", state)
-            return self._next_step_prompt(state, just_completed=True)
+            # Completing the final step finalizes the task — no separate `done` needed.
+            return self._advance_or_finish(
+                root, project, execution_id, task_id, state,
+                summary=str(cmd.get("summary", "")), just_completed=True)
 
         if ctype == "revise_steps":
             steps = cmd.get("steps") if isinstance(cmd.get("steps"), list) else []
             state = self.storage.revise_steps(root, project, execution_id, steps)
             self.publish_progress(execution_id, "steps", state)
-            return "Plan updated. " + self._next_step_prompt(state)
+            out = self._advance_or_finish(root, project, execution_id, task_id, state)
+            return None if out is None else "Plan updated. " + out
 
         if ctype in ("question", "issue"):
             text = str(cmd.get("question") if ctype == "question" else cmd.get("issue") or "")
@@ -406,6 +425,8 @@ class ExecutionManager:
             return None  # pause for the user
 
         if ctype == "done":
+            # Defensive net: the loop normally finalizes when the last step completes
+            # (no `done` needed), but honor an explicit done if the model still sends one.
             prog = self.storage.read_progress(root, project, execution_id)
             incomplete = [s.title for s in (prog.steps if prog else [])
                           if s.status not in ("done", "skipped")]
