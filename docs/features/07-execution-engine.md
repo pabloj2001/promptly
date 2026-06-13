@@ -99,15 +99,22 @@ satisfy them before it may report `done`.
 drains `stream-json` to (a) capture `session_id`, (b) surface the live **activity** line
 (`thinking`/`tool_use`/`text` → `progress.activity`, published), and (c) read the turn's
 **command** from the final `result` event's `structured_output`.
-- **Prompt:** rendered from `execute_task.md.j2` (09). The **task spec is inlined** along with
-  the pre-planned step list; the project spec, sibling specs, `CLAUDE.md`, and source are read
-  by path **from the worktree's own checkout** (reads confined to the worktree — see
-  Permissions). The model does the current step's work with its tools, then returns one command.
+- **Prompt:** rendered from `execute_task.md.j2` (09). The **task spec is inlined** along with the
+  full pre-planned step list as an *overview*; the project spec, sibling specs, `CLAUDE.md`, and
+  source are read by path **from the worktree's own checkout** (reads confined to the worktree —
+  see Permissions). The model is told to work on **one step at a time** (starting at step 1) and
+  to report it by **number**, not to work ahead.
+- **One-step-at-a-time loop.** After each `step_complete`, the continue-prompt
+  (`_next_step_prompt`) names the now-active step **by number + title** ("Now work ONLY on step 2
+  of 5: …") so the model always knows exactly what to do next; when no steps remain it's asked to
+  wrap up with `done`.
 - **Dispatch** (`_handle_command`, see `api/services/exec_protocol.py`):
-  `step_complete{title}` marks the step `done` + auto-advances the next → resume; `revise_steps`
-  replaces the whole plan (preserving ids/timestamps by title) → resume; `thinking` updates the
-  activity → resume; `question`/`issue` records a pending question (with `kind`) → **pause**
-  (`awaiting_input`); `done` finalizes (below).
+  `step_complete{step:N}` marks step number N `done` (falling back to a fuzzy title match, then
+  the active step, so a mismatch never drops a completion) + auto-advances the next → resume;
+  `revise_steps` replaces the whole plan (preserving ids/timestamps + done state by title) →
+  resume; `thinking` updates the activity → resume; `question`/`issue` records a pending question
+  (with `kind`; an `issue` also flags the task `executionBlocked` so the sidebar surfaces it) →
+  **pause** (`awaiting_input`); `done` finalizes (below).
 - **Command source:** the live `structured_output`; if a turn's process is lost (server restart)
   the command is recovered from the transcript (`~/.claude/projects/*/<session_id>.jsonl`, a
   `tool_use` named `StructuredOutput`).

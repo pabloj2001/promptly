@@ -8,7 +8,7 @@ which we read as a fallback when a turn's process is lost (e.g. server restart).
 
 Command shapes (``type`` required):
   {"type":"thinking","text":...}                      progress note (surfaced, optional)
-  {"type":"step_complete","title":...}                mark the named step done
+  {"type":"step_complete","step":N}                   mark step number N done
   {"type":"revise_steps","steps":[{title,detail?,done}]}  replace the whole plan
   {"type":"question","question":...}                  ask the user (pauses)
   {"type":"issue","issue":...,"detail"?:...}          report a blocker (pauses)
@@ -31,6 +31,7 @@ COMMAND_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "type": {"type": "string", "enum": COMMAND_TYPES},
+        "step": {"type": "integer"},
         "title": {"type": "string"},
         "steps": {
             "type": "array",

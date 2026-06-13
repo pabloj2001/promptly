@@ -261,6 +261,17 @@ def test_complete_step_fuzzy_and_fallback(storage, root):
     assert s.steps[2].status == "in_progress"
 
 
+def test_complete_step_by_number(storage, root):
+    storage.create_project("Demo", root)
+    storage.create_execution(root, "Demo", "en", "tn")
+    storage.seed_steps(root, "Demo", "en", [{"title": "a"}, {"title": "b"}, {"title": "c"}])
+    s = storage.complete_step(root, "Demo", "en", number=1)
+    assert s.steps[0].status == "done" and s.steps[1].status == "in_progress"
+    # an out-of-range number falls back to the active step rather than dropping it
+    s = storage.complete_step(root, "Demo", "en", number=99)
+    assert s.steps[1].status == "done" and s.steps[2].status == "in_progress"
+
+
 def test_revise_steps_preserves_done_when_flag_omitted(storage, root):
     storage.create_project("Demo", root)
     storage.create_execution(root, "Demo", "er", "tr")

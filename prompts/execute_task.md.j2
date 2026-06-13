@@ -25,19 +25,24 @@ Also read any `CLAUDE.md` and the actual source in your worktree before changing
 
 Follow these throughout, and make sure they are satisfied before you report `done`.
 {% endif %}
-## Your plan (work it one step at a time, in order)
+## Your plan — overview (you work ONE step at a time, in order)
 
 {% for s in steps %}{{ loop.index }}. {{ s.title }}{% if s.detail %} — {{ s.detail }}{% endif %}
 {% endfor %}
+This is the full plan for context. **Work on only ONE step per turn** — do not work ahead. You'll
+start on **step 1**; after you complete it, Promptly will tell you which step to work on next.
+
 ## How to report progress (IMPORTANT)
 
 You report progress to Promptly by returning a **single structured-output command** at the end
-of each turn. Do the actual work first with your normal tools (read, edit, run tests — think and
-iterate as much as you need; that reasoning is for you, the user does not see it), and when you
-reach a reporting point, return **exactly one** of these commands as your structured output:
+of each turn. Do the actual work for the current step first with your normal tools (read, edit,
+run tests — think and iterate as much as you need; that reasoning is for you, the user does not
+see it), and when you finish that step, return **exactly one** of these commands as your
+structured output:
 
-- `{"type":"step_complete","title":"<exact step title>"}` — the moment you finish a step. The
-  next step becomes in-progress automatically; you'll be resumed to continue.
+- `{"type":"step_complete","step":<number>}` — the moment you finish the step you were told to
+  work on. Use its **number** from the plan above (e.g. `"step": 1`). You'll be resumed and told
+  the next step to work on.
 - `{"type":"revise_steps","steps":[{"title":"...","detail":"<optional>","done":true|false}]}` —
   if the plan is wrong: provide the ENTIRE updated list, with `done:true` on already-finished
   steps.
@@ -46,13 +51,14 @@ reach a reporting point, return **exactly one** of these commands as your struct
 - `{"type":"issue","issue":"...","detail":"<optional>"}` — when you hit a blocker you cannot
   resolve (e.g. a tool/network/credentials failure). You will pause and be resumed with guidance.
 - `{"type":"thinking","text":"..."}` — optional: surface a short progress note; you'll continue.
-- `{"type":"done","summary":"..."}` — ONLY when the task is fully implemented AND every step is
-  complete. Promptly commits your worktree and moves the task to review. If any step is still
-  incomplete this is rejected and you're told what remains.
+- `{"type":"done","summary":"..."}` — ONLY after you've completed the FINAL step. Promptly commits
+  your worktree and moves the task to review. If any step is still incomplete this is rejected and
+  you're told what remains.
 
 Rules:
-- Return **one** command per turn — it is your turn's final output.
-- Don't report `done` until every step is `step_complete` (or revised away).
+- Work on the current step only, then return **one** command per turn — it is your turn's output.
+- `step_complete` refers to a step by its **number**; report `done` only after the last step.
 - After `question`/`issue`/`done`, stop — you'll be resumed if needed.
 
-Begin: read the project spec + relevant source, then start on the first step.
+Begin: read the project spec + relevant source, then work ONLY on **step 1** and, when it's
+finished, return `step_complete` with `"step": 1`.

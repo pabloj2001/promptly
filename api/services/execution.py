@@ -343,6 +343,25 @@ class ExecutionManager:
             "stderr": b"".join(stderr_buf).decode(errors="replace")[-2000:],
         }
 
+    def _next_step_prompt(self, state: ProgressState, *, just_completed: bool = False) -> str:
+        """Continue-prompt that points Claude at exactly the current (in_progress) step
+        by number, so it works one step at a time. When none remain, ask it to wrap up."""
+        steps = state.steps
+        active = next(
+            ((i, s) for i, s in enumerate(steps) if s.status == "in_progress"), None)
+        lead = "That step is done. " if just_completed else ""
+        if active is None:
+            return (lead + "All steps are complete. Do a final check of your work, then "
+                    "return a done command with a short summary.")
+        idx, s = active
+        total = len(steps)
+        line = f"step {idx + 1} of {total}: {s.title}"
+        if s.detail:
+            line += f" — {s.detail}"
+        return (lead + f"Now work ONLY on {line}. Don't work ahead. When you finish it, "
+                f'return step_complete with "step": {idx + 1}. If that was the final step, '
+                "return done instead.")
+
     def _handle_command(
         self, root: str, project: str, execution_id: str, task_id: str, cmd: dict,
     ) -> Optional[str]:
@@ -358,16 +377,16 @@ class ExecutionManager:
 
         if ctype == "step_complete":
             state = self.storage.complete_step(
-                root, project, execution_id, title=cmd.get("title"))
+                root, project, execution_id,
+                number=cmd.get("step"), title=cmd.get("title"))
             self.publish_progress(execution_id, "steps", state)
-            return ("Step recorded. Continue with the next step; return one command when "
-                    "you finish it, hit a blocker, or are done.")
+            return self._next_step_prompt(state, just_completed=True)
 
         if ctype == "revise_steps":
             steps = cmd.get("steps") if isinstance(cmd.get("steps"), list) else []
             state = self.storage.revise_steps(root, project, execution_id, steps)
             self.publish_progress(execution_id, "steps", state)
-            return "Plan updated. Continue with the in-progress step."
+            return "Plan updated. " + self._next_step_prompt(state)
 
         if ctype in ("question", "issue"):
             text = str(cmd.get("question") if ctype == "question" else cmd.get("issue") or "")

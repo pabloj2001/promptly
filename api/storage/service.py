@@ -678,12 +678,17 @@ class StorageService:
 
     def complete_step(
         self, root: str, name: str, execution_id: str, *,
-        step_id: Optional[str] = None, title: Optional[str] = None,
+        number: Optional[int] = None, step_id: Optional[str] = None,
+        title: Optional[str] = None,
     ) -> ProgressState:
-        """Mark a step done (by id or title) and auto-advance the next pending step
-        to in_progress (07)."""
+        """Mark a step done (by 1-based number, id, or title) and auto-advance the next
+        pending step to in_progress (07)."""
         def fn(s: ProgressState) -> None:
-            match = _find_step(s.steps, step_id, title)
+            match: Optional[Step] = None
+            if number is not None and 1 <= number <= len(s.steps):
+                match = s.steps[number - 1]
+            if match is None:
+                match = _find_step(s.steps, step_id, title)
             if match is None:
                 # The protocol is strictly one step at a time, so a step_complete with
                 # no resolvable title almost always means "the step I was working on."
