@@ -105,6 +105,9 @@ class MetadataEntry(CamelModel):
     # True when this task's execution hit an error needing user attention (the Build
     # sidebar highlights it red); cleared on resume/completion.
     execution_error: bool = False
+    # True when the execution is paused on a blocker it reported (an `issue`); the Build
+    # sidebar marks it so the user notices. Cleared once answered/resumed/completed.
+    execution_blocked: bool = False
     file: str
     created_at: str
     updated_at: str

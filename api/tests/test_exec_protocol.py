@@ -107,6 +107,16 @@ def test_handle_issue_pauses_as_issue(storage, root):
     assert prog.status == ProgressStatus.awaiting_input.value
     q = prog.pending_questions[-1]
     assert q.kind == "issue" and "ETIMEDOUT" in q.question
+    # a blocker flags the task so the Build sidebar surfaces it
+    assert storage.get_entry(root, "Demo", "tasks", tid).execution_blocked is True
+
+
+def test_handle_question_does_not_flag_blocked(storage, root):
+    em, tid = _em_with_exec(storage, root)
+    em._handle_command(root, "Demo", "x1", tid,
+                       {"type": "question", "question": "Which DB?"})
+    # a plain question is not a blocker
+    assert storage.get_entry(root, "Demo", "tasks", tid).execution_blocked is False
 
 
 def test_handle_done_incomplete_returns_correction(storage, root):

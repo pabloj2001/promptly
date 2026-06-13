@@ -376,6 +376,13 @@ class ExecutionManager:
                 text = f"{text}\n\n{detail}".strip()
             state, _ = self.storage.add_question(
                 root, project, execution_id, text or f"(empty {ctype})", kind=ctype)
+            # An `issue` is a blocker — flag the task so the sidebar surfaces it.
+            try:
+                self.storage.patch_metadata(
+                    root, project, "tasks", task_id,
+                    {"executionBlocked": ctype == "issue"})
+            except NotFoundError:
+                pass
             self.publish_progress(execution_id, "question", state)
             return None  # pause for the user
 
@@ -424,7 +431,8 @@ class ExecutionManager:
             root, project, execution_id, ProgressStatus.completed)
         self.storage.set_status(root, project, task_id, TaskStatus.in_review)
         self.storage.patch_metadata(
-            root, project, "tasks", task_id, {"executionError": False})
+            root, project, "tasks", task_id,
+            {"executionError": False, "executionBlocked": False})
         self.publish_progress(execution_id, "status", state)
 
     # ── Dependency chaining (build on in-review, pushed deps) ────────────────────
@@ -528,6 +536,11 @@ class ExecutionManager:
         if prog is None:
             raise NotFoundError(f"execution {execution_id} not found")
         _, q = self.storage.answer_question(root, project, execution_id, question_id, answer)
+        try:  # answering clears any blocker flag — the run resumes below
+            self.storage.patch_metadata(
+                root, project, "tasks", prog.task_id, {"executionBlocked": False})
+        except NotFoundError:
+            pass
         sync = self._sync_for_resume(root, project, execution_id)
         if q.kind == "issue":
             lead = (f"Regarding the issue you reported (\"{q.question}\"), the user "
@@ -595,7 +608,8 @@ class ExecutionManager:
 
         try:
             self.storage.patch_metadata(
-                root, project, "tasks", prog.task_id, {"executionError": False})
+                root, project, "tasks", prog.task_id,
+                {"executionError": False, "executionBlocked": False})
         except NotFoundError:
             pass
 

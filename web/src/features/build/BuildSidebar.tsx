@@ -131,6 +131,7 @@ function Row({
 }) {
   const meta = task.status ? STATUS_META[task.status] : null;
   const errored = !!task.executionError;
+  const blocked = !errored && !!task.executionBlocked;
   return (
     <button
       className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
@@ -138,21 +139,30 @@ function Row({
           ? "bg-blue-100 text-blue-800"
           : errored
             ? "text-red-700 hover:bg-red-50"
-            : "text-slate-700 hover:bg-slate-100"
+            : blocked
+              ? "text-amber-700 hover:bg-amber-50"
+              : "text-slate-700 hover:bg-slate-100"
       }`}
       onClick={onSelect}
-      title={errored ? "This execution hit an error — open it to retry" : undefined}
+      title={
+        errored
+          ? "This execution hit an error — open it to retry"
+          : blocked
+            ? "Claude hit a blocker — open it to respond"
+            : undefined
+      }
     >
       <span
         className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-          errored ? "bg-red-500" : meta ? meta.dot : "bg-transparent"
+          errored ? "bg-red-500" : blocked ? "bg-amber-500" : meta ? meta.dot : "bg-transparent"
         }`}
       />
-      <span className={`min-w-0 flex-1 truncate ${errored ? "font-medium" : ""}`}>
+      <span className={`min-w-0 flex-1 truncate ${errored || blocked ? "font-medium" : ""}`}>
         {task.name}
       </span>
       {errored && <span className="shrink-0 text-xs text-red-500">⚠</span>}
-      {task.status === "in_progress" && task.executionId && !errored && (
+      {blocked && <span className="shrink-0 text-xs text-amber-500">⚠</span>}
+      {task.status === "in_progress" && task.executionId && !errored && !blocked && (
         <Spinner className="text-blue-500" />
       )}
     </button>

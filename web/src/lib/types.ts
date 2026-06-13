@@ -46,6 +46,7 @@ export interface MetadataEntry {
   custom: Record<string, unknown>;
   executionId?: string | null;
   executionError?: boolean;
+  executionBlocked?: boolean;
   operation?: Operation | null;
   file: string;
   createdAt: string;
