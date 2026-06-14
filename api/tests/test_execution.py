@@ -87,6 +87,36 @@ def test_sync_worktree_ff_and_conflict(root, tmp_path):
     assert res2["updated"] and "README.md" in res2["conflicts"]
 
 
+def test_diff_includes_untracked_and_nested_repos(root, tmp_path):
+    from pathlib import Path
+
+    _seed_repo(root)
+    wt = str(tmp_path / "wt")
+    base = worktree.add_worktree(root, wt, worktree.branch_name("t", "diffid1"))
+
+    # Untracked new file at the top level (not shown by `git diff <base>`).
+    Path(wt, "top_new.txt").write_text("hello\n")
+
+    # A nested git repo inside the worktree with a modified + an untracked file.
+    sub = Path(wt, "subproj")
+    sub.mkdir()
+    _git(["init", "-q"], sub)
+    _git(["config", "user.email", "t@t.com"], sub)
+    _git(["config", "user.name", "T"], sub)
+    Path(sub, "code.py").write_text("x = 1\n")
+    _git(["add", "-A"], sub)
+    _git(["commit", "-q", "-m", "init"], sub)
+    Path(sub, "code.py").write_text("x = 2\n")        # uncommitted change
+    Path(sub, "new_in_sub.py").write_text("y = 3\n")  # untracked in the nested repo
+
+    d = worktree.diff(wt, base)
+    paths = {f["path"] for f in d["files"]}
+    assert "top_new.txt" in paths               # top-level untracked captured
+    assert "subproj/code.py" in paths           # nested repo change captured
+    assert "subproj/new_in_sub.py" in paths     # nested repo untracked captured
+    assert "subproj" not in paths               # the nested repo dir isn't a bare entry
+
+
 def test_merge_branches_and_branch_exists(root, tmp_path):
     from pathlib import Path
 

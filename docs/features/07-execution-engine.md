@@ -159,9 +159,16 @@ Record `{url, number, state}` in the task's `relatedPRs`. Keep the worktree so s
 PR-comment review can resume work in place.
 
 ## Diff data (`GET /executions/{id}/diff`)
-For the Build Diff view (08): list changed files and per-file diffs of the worktree vs. its
-base, plus the current HEAD commit sha (used to partition `comments.json`). Compute with
-`git -C <worktree> diff` / `git status --porcelain` / `git rev-parse HEAD`.
+For the Build Diff view (08): list changed files and per-file diffs, plus the current HEAD sha
+(used to partition `comments.json`). `worktree.diff` gathers changes from **three sources** so
+nothing is missed:
+1. the worktree's own tracked changes vs `base_sha` (committed + uncommitted);
+2. top-level **untracked** new files (not shown by `git diff <base>`) — emitted via
+   `git diff --no-index /dev/null <file>` as adds;
+3. **nested git repos inside the worktree** (`find_nested_repos` — the user's code may live in
+   repos nested under the worktree rather than tracked by it): each is diffed working-tree-vs-its
+   -own-`HEAD` plus untracked, with paths prefixed by the repo's location.
+Dependency/build dirs (`node_modules`, `.venv`, `dist`, …) are pruned from the scan.
 
 ## SSE bus
 ExecutionManager keeps an in-memory `dict[execution_id -> subscribers]`. Command dispatch and

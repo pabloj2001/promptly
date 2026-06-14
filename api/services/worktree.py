@@ -10,9 +10,13 @@ All functions shell out to ``git``; none mutate Promptly state.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
+
+# Directories never worth scanning for nested repos / diffs (deps, build output).
+_PRUNE_DIRS = {"node_modules", ".venv", "venv", "dist", "build", "__pycache__", ".next"}
 
 
 class GitError(RuntimeError):
@@ -206,26 +210,86 @@ def commit_all(worktree: str | Path, message: str) -> Optional[str]:
     return head_sha(worktree)
 
 
-def diff(worktree: str | Path, base_sha: str) -> dict:
-    """Worktree (committed + uncommitted) vs. its base, for the Build Diff view (08).
+def _run_git(args: list[str], cwd: str | Path) -> str:
+    """Like _git but tolerant: returns stdout and never raises (some diff commands
+    exit non-zero by design, e.g. `diff --no-index`, or on a repo with no commits)."""
+    return subprocess.run(["git", *args], cwd=str(cwd),
+                          capture_output=True, text=True).stdout
 
-    ``git diff <base_sha>`` compares the working tree against the base commit, so a
-    single pass captures both committed and uncommitted changes.
-    """
-    name_status = _git(
-        ["diff", "--name-status", base_sha], cwd=worktree
-    ).strip()
+
+def find_nested_repos(worktree: str | Path) -> list[Path]:
+    """Git repositories that live *inside* the worktree (the user's actual code may be
+    in nested repos rather than tracked by the outer worktree). Returns their dirs;
+    does not descend into a repo once found, and prunes dependency/build dirs."""
+    wt = Path(worktree)
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(wt):
+        here = Path(dirpath)
+        # A ".git" dir (normal clone) or file (submodule/linked worktree) marks a repo.
+        if here != wt and (".git" in dirnames or ".git" in filenames):
+            found.append(here)
+            dirnames[:] = []  # don't descend into a nested repo
+            continue
+        dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS and d != ".git"]
+    return found
+
+
+def _collect_changes(
+    repo: str | Path, base: str, *, prefix: str = "", skip: Optional[set[str]] = None,
+) -> list[dict]:
+    """File changes in ``repo`` vs ``base``: tracked (committed + uncommitted) plus
+    untracked new files. ``prefix`` is prepended to each path (for nested repos);
+    ``skip`` is a set of repo-relative dir paths to omit (nested repos handled
+    separately)."""
+    skip = skip or set()
     files: list[dict] = []
+
+    def skipped(path: str) -> bool:
+        return any(path == s or path.startswith(s + "/") for s in skip)
+
+    # Tracked changes vs base.
+    name_status = _run_git(["diff", "--name-status", base], cwd=repo).strip()
     for line in name_status.splitlines():
         parts = line.split("\t")
         if len(parts) < 2:
             continue
         status, path = parts[0], parts[-1]
-        patch = _git(["diff", base_sha, "--", path], cwd=worktree)
-        files.append({"path": path, "status": status, "diff": patch})
+        if skipped(path):
+            continue
+        patch = _run_git(["diff", base, "--", path], cwd=repo)
+        files.append({"path": prefix + path, "status": status, "diff": patch})
+
+    # Untracked new files (not shown by `git diff <base>`).
+    others = _run_git(
+        ["ls-files", "--others", "--exclude-standard"], cwd=repo).strip()
+    for path in others.splitlines():
+        path = path.rstrip("/")
+        if not path or skipped(path):
+            continue
+        patch = _run_git(["diff", "--no-index", "--", os.devnull, path], cwd=repo)
+        files.append({"path": prefix + path, "status": "A", "diff": patch})
+
+    return files
+
+
+def diff(worktree: str | Path, base_sha: str) -> dict:
+    """All changes for the Build Diff view (08): the worktree vs its base, **plus** any
+    nested git repos inside the worktree (the user's code may live in them). For the
+    outer worktree we diff against ``base_sha`` (committed + uncommitted + untracked);
+    for each nested repo we diff its working tree vs its own HEAD (the build session
+    doesn't commit), with paths prefixed by the repo's location."""
+    wt = Path(worktree)
+    nested = find_nested_repos(wt)
+    nested_rel = {str(r.relative_to(wt)).replace(os.sep, "/") for r in nested}
+
+    files = _collect_changes(wt, base_sha, skip=nested_rel)
+    for repo in nested:
+        prefix = str(repo.relative_to(wt)).replace(os.sep, "/") + "/"
+        files.extend(_collect_changes(repo, "HEAD", prefix=prefix))
+
     return {
         "baseSha": base_sha,
-        "headSha": head_sha(worktree),
+        "headSha": head_sha(wt),
         "files": files,
     }
 
