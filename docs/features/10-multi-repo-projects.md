@@ -39,7 +39,17 @@ Writes are scoped to `workspace/<target>/` by the PreToolUse hook; `--add-dir` c
 workspace (reads). Commit/push/diff/PR all operate on the target repo; **the PR is opened against
 the execution's target repo** (its remote + default branch).
 
-Clones are **fresh per execution** for now (a per-project mirror cache is a later optimization).
+**Mirror cache.** Additional repos are checked out via a per-project bare mirror at
+`executions/.cache/<repo-id>.git` (gitignored): `ensure_mirror` clones `--mirror` once then
+`remote update`s it; each workspace checkout is `git clone --shared` from the mirror (objects
+borrowed, so clones are tiny) with `origin` retargeted to the real URL for push/PR.
+
+**Workspace pruning.** When a task is marked **done**, its execution workspaces are removed
+(`prune_task_workspaces` → `worktree.remove_workspace`: drop linked worktrees, delete clones).
+Pruning only happens once the task's **PR is merged** (checked via `gh`, `GET /tasks/{id}/pr-status`);
+marking done with an unmerged/absent PR returns `409 pr_not_merged` so the UI can warn and retry
+with `force` (which marks done but keeps the workspace, avoiding loss of unpushed work). The diff
+endpoint returns an empty diff once a workspace is pruned.
 
 ## Cross-repo dependencies (implemented)
 We track each execution's branch (`ProgressState.branch`, reachable via `task.executionId`). When a

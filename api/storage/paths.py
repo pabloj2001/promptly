@@ -85,6 +85,12 @@ def workspace_path(root: str, name: str, execution_id: str) -> Path:
     return execution_dir(root, name, execution_id) / "workspace"
 
 
+def repo_cache_dir(root: str, name: str) -> Path:
+    """Per-project bare-mirror cache for additional repos (10) — under ``executions/``
+    so it's already gitignored. Workspace clones share its objects (``--shared``)."""
+    return executions_dir(root, name) / ".cache"
+
+
 def ensure_skeleton(root: str, name: str) -> Path:
     """Create the empty project dir layout (docs/, tasks/, executions/ + empty
     metadata maps). Idempotent. Does NOT create ``project.md`` — that is the

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 from typing import AsyncIterator, Optional
 
@@ -141,8 +142,8 @@ class ExecutionManager:
         if target.primary:
             base_sha = worktree.add_worktree(root, target_dir, branch, base=base_branch)
         else:
-            base_sha = worktree.clone_repo(
-                target.url, target_dir, branch=branch,
+            base_sha = self._checkout_additional(
+                root, project, target, target_dir, branch=branch,
                 base_branch=target.default_branch or None)
 
         ctx_failed: list[str] = []
@@ -161,9 +162,10 @@ class ExecutionManager:
                                  else base_branch)
                     worktree.add_worktree_detached(root, cdir, commitish)
                 elif dep:
-                    worktree.clone_repo(r.url, cdir, base_branch=dep[1])
+                    self._checkout_additional(root, project, r, cdir, base_branch=dep[1])
                 else:
-                    worktree.clone_repo(r.url, cdir, base_branch=r.default_branch or None)
+                    self._checkout_additional(
+                        root, project, r, cdir, base_branch=r.default_branch or None)
                 if dep:
                     ctx_at_dep.append(f"{r.name} (at dependency “{dep[0]}”)")
             except worktree.GitError:
@@ -587,6 +589,57 @@ class ExecutionManager:
             out.append((dep.name, dep_prog.branch))
         return out
 
+    def _checkout_additional(
+        self, root: str, project: str, repo, dest: str, *,
+        branch: Optional[str] = None, base_branch: Optional[str] = None,
+    ) -> str:
+        """Check out an additional repo into the workspace via the per-project mirror
+        cache (10) so the clone shares objects and stays small."""
+        cache = paths.repo_cache_dir(root, project) / f"{repo.id}.git"
+        worktree.ensure_mirror(str(cache), repo.url)
+        return worktree.clone_from_mirror(
+            str(cache), dest, repo.url, branch=branch, base_branch=base_branch)
+
+    # ── Pruning + PR status (10) ─────────────────────────────────────────────────
+
+    def pr_status(self, root: str, project: str, task) -> dict:
+        """Whether the task's PR is merged, via ``gh`` (best-effort). Returns
+        ``{has_pr, merged, state}``; on any error reports not-merged so the caller can
+        warn rather than silently prune."""
+        prs = task.related_prs or []
+        if not prs:
+            return {"hasPr": False, "merged": False, "state": "none"}
+        url = prs[-1].url
+        try:
+            proc = subprocess.run(
+                ["gh", "pr", "view", url, "--json", "state"],
+                capture_output=True, text=True, timeout=30)
+            if proc.returncode != 0:
+                return {"hasPr": True, "merged": False, "state": "unknown"}
+            state = (json.loads(proc.stdout or "{}").get("state") or "").upper()
+            return {"hasPr": True, "merged": state == "MERGED", "state": state or "unknown"}
+        except Exception:  # noqa: BLE001 — gh missing/offline/etc.
+            return {"hasPr": True, "merged": False, "state": "unknown"}
+
+    def prune_task_workspaces(self, root: str, project: str, task_id: str) -> int:
+        """Remove the on-disk workspaces of every execution belonging to ``task_id``
+        (10) — called when a task is marked done with its PR merged. Returns the count
+        pruned. The progress.json metadata is kept; only the heavy checkouts go."""
+        pruned = 0
+        edir = paths.executions_dir(root, project)
+        if not edir.exists():
+            return 0
+        for sub in edir.iterdir():
+            if not sub.is_dir() or sub.name == ".cache":
+                continue
+            prog = self.storage.read_progress(root, project, sub.name)
+            if prog is None or prog.task_id != task_id:
+                continue
+            worktree.remove_workspace(root, str(paths.workspace_path(root, project, sub.name)))
+            worktree.remove_workspace(root, str(paths.worktree_path(root, project, sub.name)))
+            pruned += 1
+        return pruned
+
     def _dep_branch_for_repo(
         self, root: str, project: str, task, repo_id: str,
     ) -> Optional[tuple[str, str]]:
@@ -850,6 +903,9 @@ class ExecutionManager:
         if prog is None or not prog.base_sha:
             raise NotFoundError(f"execution {execution_id} not found")
         wt = self._workspace_layout(root, project, execution_id)["target_dir"]
+        # The workspace may have been pruned (task done + PR merged, 10) — no diff then.
+        if not os.path.isdir(wt):
+            return {"baseSha": prog.base_sha, "headSha": "", "files": []}
         return worktree.diff(wt, prog.base_sha)
 
     # ── Startup recovery ─────────────────────────────────────────────────────────

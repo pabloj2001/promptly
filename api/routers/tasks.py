@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from ..deps import ActiveProject, get_active_project, get_claude, get_storage
+from ..deps import ActiveProject, get_active_project, get_claude, get_execution, get_storage
 from ..models import ChatHistory, ChatMessage, Comment, DependencyGraph, DocType, MetadataEntry
 from ..schemas import (
     AddCommentRequest,
@@ -22,8 +22,9 @@ from ..schemas import (
 )
 from ..deps import get_claude, get_operations
 from ..services.claude import ClaudeService
+from ..services.execution import ExecutionManager
 from ..services.operations import OperationManager
-from ..storage import ConflictError, StorageService, ValidationError
+from ..storage import ConflictError, StorageError, StorageService, ValidationError
 from ._helpers import provisional_name
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -133,12 +134,26 @@ def save_task(
     return storage.save_body(ap.root, ap.name, COLLECTION, task_id, req.body)
 
 
+@router.get("/{task_id}/pr-status")
+def pr_status(
+    task_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+    em: ExecutionManager = Depends(get_execution),
+):
+    """Whether the task's PR is merged (10) — the Build/Plan UI checks this before
+    letting the user mark a task done."""
+    entry = storage.get_entry(ap.root, ap.name, COLLECTION, task_id)
+    return em.pr_status(ap.root, ap.name, entry)
+
+
 @router.put("/{task_id}/status", response_model=MetadataEntry)
 def set_status(
     task_id: str,
     req: StatusChange,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
+    em: ExecutionManager = Depends(get_execution),
 ):
     entry = storage.get_entry(ap.root, ap.name, COLLECTION, task_id)
     # Guard: can't leave a running execution behind by jumping to done.
@@ -151,7 +166,24 @@ def set_status(
         prog = storage.read_progress(ap.root, ap.name, entry.execution_id)
         if prog is not None and prog.status in ("running", "awaiting_input"):
             raise ConflictError("cannot mark done while an execution is active")
-    return storage.set_status(ap.root, ap.name, task_id, req.status)
+
+    merged = False
+    if req.status == "done":
+        # Done normally follows a merged PR. If it isn't merged, warn (the client
+        # confirms and retries with force); only prune the workspace once merged (10).
+        status = em.pr_status(ap.root, ap.name, entry)
+        merged = status["merged"]
+        if not merged and not req.force:
+            raise StorageError(
+                "This task's PR isn't merged yet"
+                if status["hasPr"] else "This task has no PR yet",
+                status=409, code="pr_not_merged",
+            )
+
+    updated = storage.set_status(ap.root, ap.name, task_id, req.status)
+    if req.status == "done" and merged:
+        em.prune_task_workspaces(ap.root, ap.name, task_id)
+    return updated
 
 
 @router.post("/{task_id}/address", response_model=AddressResponse)

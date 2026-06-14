@@ -292,6 +292,20 @@ def test_status_change(client, proj):
     assert r.json()["status"] == "in_progress"
 
 
+def test_set_status_done_gated_on_pr(client, proj):
+    t = client.post("/tasks", params=q(proj), json={"prompt": "t", "name": "T"}).json()
+    # No PR -> marking done is gated (the client confirms + retries with force).
+    r = client.put(f"/tasks/{t['id']}/status", params=q(proj), json={"status": "done"})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "pr_not_merged"
+    # force -> goes through.
+    r2 = client.put(f"/tasks/{t['id']}/status", params=q(proj),
+                    json={"status": "done", "force": True})
+    assert r2.status_code == 200 and r2.json()["status"] == "done"
+    # pr-status endpoint reports no PR.
+    ps = client.get(f"/tasks/{t['id']}/pr-status", params=q(proj)).json()
+    assert ps["hasPr"] is False
+
+
 def test_cycle_rejected_via_metadata(client, proj):
     a = client.post("/tasks", params=q(proj), json={"prompt": "a", "name": "A"}).json()
     b = client.post("/tasks", params=q(proj),

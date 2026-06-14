@@ -117,6 +117,44 @@ def test_diff_includes_untracked_and_nested_repos(root, tmp_path):
     assert "subproj" not in paths               # the nested repo dir isn't a bare entry
 
 
+def test_mirror_clone_shares_objects(root, tmp_path):
+    from pathlib import Path
+
+    _seed_repo(root)
+    cache = tmp_path / "cache.git"
+    worktree.ensure_mirror(str(cache), str(root))
+    assert (cache / "HEAD").exists()  # bare mirror created
+
+    dest = tmp_path / "dest"
+    base = worktree.clone_from_mirror(
+        str(cache), str(dest), "https://x/y.git", branch="promptly/z")
+    assert base and Path(dest, "README.md").exists()
+    url = subprocess.run(["git", "remote", "get-url", "origin"],
+                         cwd=dest, capture_output=True, text=True).stdout.strip()
+    assert url == "https://x/y.git"  # origin retargeted to the real remote
+    head = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                          cwd=dest, capture_output=True, text=True).stdout.strip()
+    assert head == "promptly/z"
+
+
+def test_prune_task_workspaces(storage, root, tmp_path):
+    from pathlib import Path
+
+    from api.storage import paths
+
+    _seed_repo(root)
+    storage.create_project("Demo", root)
+    task = storage.create_entry(root, "Demo", type="task", display_name="T")
+    storage.create_execution(root, "Demo", "e1", task.id)
+    ws = paths.workspace_path(root, "Demo", "e1")
+    (ws / "repo").mkdir(parents=True)
+    (ws / "repo" / "f.txt").write_text("x")
+
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    n = em.prune_task_workspaces(root, "Demo", task.id)
+    assert n == 1 and not ws.exists()
+
+
 def test_clone_repo_and_detached_worktree(root, tmp_path):
     from pathlib import Path
 

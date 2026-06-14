@@ -132,12 +132,17 @@ export const api = {
       method: "POST",
       scoped: true,
     }),
-  setTaskStatus: (id: string, status: TaskStatus) =>
+  setTaskStatus: (id: string, status: TaskStatus, force = false) =>
     request<MetadataEntry>(`/tasks/${id}/status`, {
       method: "PUT",
       scoped: true,
-      body: { status },
+      body: { status, force },
     }),
+  taskPrStatus: (id: string) =>
+    request<{ hasPr: boolean; merged: boolean; state: string }>(
+      `/tasks/${id}/pr-status`,
+      { scoped: true },
+    ),
   patchTaskMetadata: (id: string, patch: Record<string, unknown>) =>
     request<MetadataEntry>(`/tasks/${id}/metadata`, {
       method: "PUT",

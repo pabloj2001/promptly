@@ -104,6 +104,7 @@ class MetadataPatch(CamelModel):
 
 class StatusChange(CamelModel):
     status: TaskStatus
+    force: bool = False  # proceed to done even if the PR isn't merged (10)
 
 
 # ── Executions ─────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ All functions shell out to ``git``; none mutate Promptly state.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -66,6 +67,55 @@ def add_worktree_detached(root: str, worktree: str | Path, commitish: str = "HEA
     Path(worktree).parent.mkdir(parents=True, exist_ok=True)
     _git(["worktree", "add", "--detach", str(worktree), commitish], cwd=root)
     return sha
+
+
+def ensure_mirror(cache: str | Path, url: str) -> None:
+    """Ensure a bare mirror of ``url`` at ``cache`` and bring it up to date (10). The
+    mirror is fetched once and refreshed; workspace clones borrow its objects so each
+    execution's clone is tiny."""
+    cache = Path(cache)
+    if (cache / "HEAD").exists():
+        subprocess.run(["git", "remote", "update", "--prune"],
+                       cwd=str(cache), capture_output=True, text=True)
+        return
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    _git(["clone", "--mirror", url, str(cache)], cwd=cache.parent)
+
+
+def clone_from_mirror(
+    cache: str | Path, dest: str | Path, url: str, *,
+    branch: Optional[str] = None, base_branch: Optional[str] = None,
+) -> str:
+    """Clone a working checkout at ``dest`` that **shares objects** with the bare mirror
+    ``cache`` (``git clone --shared``), then point ``origin`` at the real ``url`` so
+    push/PR target the real remote (10). Optionally check out ``base_branch`` and create
+    a new ``branch``. Returns the base commit sha."""
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    args = ["clone", "--shared"]
+    if base_branch:
+        args += ["--branch", base_branch]
+    args += [str(cache), str(dest)]
+    _git(args, cwd=Path(dest).parent)
+    _git(["remote", "set-url", "origin", url], cwd=dest)
+    base_sha = head_sha(dest)
+    if branch:
+        _git(["checkout", "-b", branch], cwd=dest)
+    return base_sha
+
+
+def remove_workspace(root: str, workspace: str | Path) -> None:
+    """Tear down an execution workspace (10): remove any linked worktrees (primary
+    checkouts) then delete the whole tree (clones are plain dirs). Best-effort."""
+    ws = Path(workspace)
+    if not ws.exists():
+        return
+    for sub in ws.iterdir():
+        if sub.is_dir():
+            subprocess.run(["git", "worktree", "remove", "--force", str(sub)],
+                           cwd=str(root), capture_output=True, text=True)
+    shutil.rmtree(ws, ignore_errors=True)
+    subprocess.run(["git", "worktree", "prune"], cwd=str(root),
+                   capture_output=True, text=True)
 
 
 def clone_repo(

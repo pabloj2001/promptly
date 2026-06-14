@@ -300,8 +300,23 @@ export function useSetTaskStatus() {
   const qc = useQueryClient();
   const project = useProject();
   return useMutation({
-    mutationFn: ({ id, status }: { id: string; status: TaskStatus }) =>
-      api.setTaskStatus(id, status),
+    mutationFn: async ({ id, status }: { id: string; status: TaskStatus }) => {
+      try {
+        return await api.setTaskStatus(id, status);
+      } catch (e) {
+        // Marking done normally follows a merged PR; if it isn't merged the API
+        // returns pr_not_merged — confirm, then retry with force (10).
+        const err = e as { code?: string; message?: string };
+        if (err.code === "pr_not_merged") {
+          const ok = window.confirm(
+            `${err.message}. Mark it done anyway? (its build workspace won't be pruned until the PR is merged)`,
+          );
+          if (!ok) throw e;
+          return await api.setTaskStatus(id, status, true);
+        }
+        throw e;
+      }
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tasks", project] });
       qc.invalidateQueries({ queryKey: ["taskGraph", project] });
