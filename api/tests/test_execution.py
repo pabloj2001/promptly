@@ -175,6 +175,58 @@ async def test_start_builds_multi_repo_workspace(storage, root, tmp_path):
     assert saved_prog.repo == lib_id and saved_prog.repo_dir == "lib"
 
 
+async def test_cross_repo_dependency_context(storage, root, tmp_path):
+    """A task whose dependency is an in-review+pushed task in another repo gets that
+    context repo checked out at the dependency's branch (its work is visible)."""
+    from pathlib import Path
+
+    from api.models import ProjectRepo, ProjectRepos
+    from api.storage import paths
+
+    _seed_repo(root)
+    # Additional repo source with a feature branch carrying the dependency's work.
+    src = tmp_path / "libsrc"
+    src.mkdir()
+    _git(["init", "-q"], str(src))
+    _seed_repo(str(src))
+    _git(["checkout", "-q", "-b", "promptly/dep-x"], str(src))
+    Path(src, "feature.py").write_text("dep work\n")
+    _git(["add", "-A"], str(src))
+    _git(["commit", "-q", "-m", "dep work"], str(src))
+
+    storage.create_project("Demo", root)
+    repos = storage.read_repos(root, "Demo").repos
+    saved = storage.write_repos(root, "Demo", ProjectRepos(
+        repos=repos + [ProjectRepo(id="", name="lib", url=str(src))]))
+    lib_id = next(r.id for r in saved.repos if r.name == "lib")
+
+    # Dependency task targets lib, in review + pushed (branch promptly/dep-x).
+    dep = storage.create_entry(root, "Demo", type="task", display_name="Dep", repo=lib_id)
+    storage.create_execution(root, "Demo", "depexec", dep.id)
+    storage.set_execution_meta(root, "Demo", "depexec", branch="promptly/dep-x",
+                               base_sha="x", repo=lib_id, repo_dir="lib")
+    storage.patch_metadata(root, "Demo", "tasks", dep.id, {
+        "status": TaskStatus.in_review.value, "executionId": "depexec",
+        "relatedPrs": [{"url": "http://pr/1", "number": 1, "state": "open"}],
+    })
+    # Main task targets the primary and depends on the lib task.
+    main = storage.create_entry(root, "Demo", type="task", display_name="Main")
+    storage.patch_metadata(root, "Demo", "tasks", main.id, {"dependsOn": [dep.id]})
+
+    class PlanFails:
+        async def plan_execution_steps(self, **k):
+            raise RuntimeError("stop after workspace setup")
+
+    em = ExecutionManager(storage, SSEBus(), claude=PlanFails())
+    prog = await em.start(root, "Demo", main.id)
+    import asyncio
+    await asyncio.sleep(0.2)
+
+    ws = paths.workspace_path(root, "Demo", prog.execution_id)
+    # lib is context (main targets primary) and pinned to the dependency's branch.
+    assert Path(ws, "lib", "feature.py").exists()
+
+
 def test_merge_branches_and_branch_exists(root, tmp_path):
     from pathlib import Path
 

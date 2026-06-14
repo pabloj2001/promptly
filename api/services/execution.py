@@ -146,21 +146,36 @@ class ExecutionManager:
                 base_branch=target.default_branch or None)
 
         ctx_failed: list[str] = []
+        ctx_at_dep: list[str] = []  # context repos pinned to a dependency's branch (10)
         for r in repos:
             if r.id == target.id:
                 continue
             cdir = str(ws / dirnames[r.id])
+            # Cross-repo dependency: if this task depends on an in-review, pushed task
+            # in THIS context repo, check it out at that dependency's branch so the work
+            # is visible (the branch is on the remote since the dep was pushed).
+            dep = self._dep_branch_for_repo(root, project, task, r.id)
             try:
                 if r.primary:
-                    worktree.add_worktree_detached(root, cdir, base_branch)
+                    commitish = (dep[1] if dep and worktree.branch_exists(root, dep[1])
+                                 else base_branch)
+                    worktree.add_worktree_detached(root, cdir, commitish)
+                elif dep:
+                    worktree.clone_repo(r.url, cdir, base_branch=dep[1])
                 else:
                     worktree.clone_repo(r.url, cdir, base_branch=r.default_branch or None)
+                if dep:
+                    ctx_at_dep.append(f"{r.name} (at dependency “{dep[0]}”)")
             except worktree.GitError:
                 ctx_failed.append(r.name)  # context is best-effort
 
         # Build on in-review, pushed dependencies that target THIS repo.
         prefix, base_sha = self._merge_dependency_branches(
             root, project, task, target_dir, base_sha, target.id)
+        if ctx_at_dep:
+            prefix += ("NOTE: these context repos are checked out at an in-review "
+                       "dependency's branch (their not-yet-merged work is present): "
+                       + ", ".join(ctx_at_dep) + ".\n\n")
         if ctx_failed:
             prefix += ("NOTE: some context repos could not be cloned ("
                        + ", ".join(ctx_failed) + "); proceed without them.\n\n")
@@ -571,6 +586,28 @@ class ExecutionManager:
                 continue
             out.append((dep.name, dep_prog.branch))
         return out
+
+    def _dep_branch_for_repo(
+        self, root: str, project: str, task, repo_id: str,
+    ) -> Optional[tuple[str, str]]:
+        """``(dep_name, branch)`` of the first in-review, pushed dependency that targets
+        ``repo_id`` — used to pin a *context* repo (other than the target) to that
+        dependency's branch so its not-yet-merged work is visible (10). Unlike
+        :meth:`_pushed_in_review_deps`, this doesn't require the branch to exist in the
+        local root: an additional repo's pushed branch lives on its own remote."""
+        tasks_meta = self.storage.read_metadata(root, project, "tasks")
+        for dep_id in task.depends_on:
+            dep = tasks_meta.get(dep_id)
+            if dep is None or dep.status != TaskStatus.in_review.value:
+                continue
+            if not dep.related_prs or not dep.execution_id:
+                continue
+            if (dep.repo or "primary") != repo_id:
+                continue
+            dep_prog = self.storage.read_progress(root, project, dep.execution_id)
+            if dep_prog and dep_prog.branch:
+                return (dep.name, dep_prog.branch)
+        return None
 
     def _merge_dependency_branches(
         self, root: str, project: str, task, wt: str, base_sha: str,

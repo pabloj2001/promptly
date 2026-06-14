@@ -41,11 +41,14 @@ the execution's target repo** (its remote + default branch).
 
 Clones are **fresh per execution** for now (a per-project mirror cache is a later optimization).
 
-## Cross-repo dependencies (phase 3)
-We already track each execution's branch (`ProgressState.branch`, reachable via
-`task.executionId`). So when a task depends on an in-review+pushed task in **another** repo, that
-repo's *context* clone is checked out at the **dependency's branch** (it's on the remote once
-pushed). Same-repo dependencies keep today's branch-merge behavior.
+## Cross-repo dependencies (implemented)
+We track each execution's branch (`ProgressState.branch`, reachable via `task.executionId`). When a
+task depends on an in-review+pushed task in **another** repo, that repo's *context* clone is checked
+out at the **dependency's branch** (`_dep_branch_for_repo` → `clone_repo(base_branch=dep_branch)`
+for additional repos, `add_worktree_detached(root, dep_branch)` for the primary; it's on the remote
+once pushed), and the build prompt notes which context repos are pinned to a dependency. Same-repo
+dependencies (targeting the *same* repo as the task) keep the branch-merge behavior
+(`_merge_dependency_branches`).
 
 ## Out of scope / deferred
 - No Plan-graph UI changes (repo selection lives in task create/edit + a project "Repos" settings
