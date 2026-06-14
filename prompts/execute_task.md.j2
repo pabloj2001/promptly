@@ -58,6 +58,9 @@ structured output:
 Rules:
 - Work on the current step only, then return **one** command per turn — it is your turn's output.
 - `step_complete` refers to a step by its **number**; the task finishes when the last step is done.
+- **Complete steps strictly in order, one at a time.** Only ever report the *current* step —
+  you cannot skip ahead or report several at once; a `step_complete` for any other step is
+  rejected. If the plan no longer fits, use `revise_steps` instead.
 - After `question`/`issue`, stop — you'll be resumed if needed.
 
 Begin: read the project spec + relevant source, then work ONLY on **step 1** and, when it's

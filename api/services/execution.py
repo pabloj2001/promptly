@@ -391,9 +391,25 @@ class ExecutionManager:
             return "Continue."
 
         if ctype == "step_complete":
+            prog = self.storage.read_progress(root, project, execution_id)
+            steps = prog.steps if prog else []
+            active_idx = next(
+                (i + 1 for i, s in enumerate(steps) if s.status == "in_progress"), None)
+            num = cmd.get("step")
+            # Enforce one-at-a-time, in order: the reported step must be the current one.
+            # Reject mismatches (e.g. Claude doing several steps then reporting a later
+            # one) instead of silently completing the wrong/active step.
+            if active_idx is not None and num is not None and num != active_idx:
+                active = steps[active_idx - 1]
+                line = f"step {active_idx}: {active.title}"
+                if active.detail:
+                    line += f" — {active.detail}"
+                return (f"Rejected: you reported step {num} complete, but steps must be "
+                        f"completed one at a time, in order. The current step is {line}. "
+                        f"Make sure that step is fully done, then return step_complete with "
+                        f'"step": {active_idx} (only that step).')
             state = self.storage.complete_step(
-                root, project, execution_id,
-                number=cmd.get("step"), title=cmd.get("title"))
+                root, project, execution_id, number=num, title=cmd.get("title"))
             self.publish_progress(execution_id, "steps", state)
             # Completing the final step finalizes the task — no separate `done` needed.
             return self._advance_or_finish(

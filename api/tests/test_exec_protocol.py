@@ -88,6 +88,17 @@ def test_handle_step_complete_continues(storage, root):
     assert prog.steps[0].status == "done" and prog.steps[1].status == "in_progress"
 
 
+def test_handle_step_complete_rejects_out_of_order(storage, root):
+    em, tid = _em_with_exec(storage, root, steps=[{"title": "a"}, {"title": "b"}, {"title": "c"}])
+    # current step is 1; reporting 3 must be rejected and nothing marked done
+    out = em._handle_command(root, "Demo", "x1", tid,
+                             {"type": "step_complete", "step": 3})
+    assert out is not None and "rejected" in out.lower() and "step 1" in out.lower()
+    prog = storage.read_progress(root, "Demo", "x1")
+    assert prog.steps[0].status == "in_progress"
+    assert all(s.status != "done" for s in prog.steps)
+
+
 def test_handle_question_pauses(storage, root):
     em, tid = _em_with_exec(storage, root)
     out = em._handle_command(root, "Demo", "x1", tid,

@@ -109,8 +109,10 @@ drains `stream-json` to (a) capture `session_id`, (b) surface the live **activit
   of 5: …") so the model always knows exactly what to do next; when no steps remain it's asked to
   wrap up with `done`.
 - **Dispatch** (`_handle_command`, see `api/services/exec_protocol.py`):
-  `step_complete{step:N}` marks step number N `done` (falling back to a fuzzy title match, then
-  the active step, so a mismatch never drops a completion) + auto-advances the next → resume;
+  `step_complete{step:N}` is **verified against the current step**: N must be the active step's
+  number — an out-of-order/batched report (Claude doing several steps then reporting a later one)
+  is **rejected** with a correction naming the current step, and nothing is marked. A matching N
+  marks that step `done` + auto-advances the next → resume;
   `revise_steps` replaces the whole plan (preserving ids/timestamps + done state by title) →
   resume; `thinking` updates the activity → resume; `question`/`issue` records a pending question
   (with `kind`; an `issue` also flags the task `executionBlocked` so the sidebar surfaces it) →
