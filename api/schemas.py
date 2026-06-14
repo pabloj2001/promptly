@@ -50,6 +50,7 @@ class CreateTaskRequest(CamelModel):
     name: Optional[str] = None
     depends_on: list[str] = Field(default_factory=list)
     task_group: Optional[str] = None
+    repo: Optional[str] = None
 
 
 class ImportDocRequest(CamelModel):
@@ -98,6 +99,7 @@ class MetadataPatch(CamelModel):
     task_group: Optional[str] = None
     depends_on: Optional[list[str]] = None
     custom: Optional[dict[str, Any]] = None
+    repo: Optional[str] = None
 
 
 class StatusChange(CamelModel):

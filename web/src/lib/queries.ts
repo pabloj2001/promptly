@@ -8,9 +8,33 @@ import {
 } from "@tanstack/react-query";
 import { api, type Collection } from "./api";
 import { useUiStore } from "../store";
-import type { CommentAnchor, DocType, ProjectSettings, TaskStatus } from "./types";
+import type {
+  CommentAnchor,
+  DocType,
+  ProjectRepos,
+  ProjectSettings,
+  TaskStatus,
+} from "./types";
 
 const useProject = () => useUiStore((s) => s.activeProject);
+
+export function useRepos() {
+  const project = useProject();
+  return useQuery({
+    queryKey: ["repos", project],
+    queryFn: api.getRepos,
+    enabled: !!project,
+  });
+}
+
+export function useSaveRepos() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: (repos: ProjectRepos) => api.putRepos(repos),
+    onSuccess: (data) => qc.setQueryData(["repos", project], data),
+  });
+}
 
 export function useSettings() {
   const project = useProject();
@@ -140,12 +164,14 @@ export function useCreateTask() {
       name,
       dependsOn,
       taskGroup,
+      repo,
     }: {
       prompt: string;
       name?: string;
       dependsOn?: string[];
       taskGroup?: string;
-    }) => api.createTask(prompt, name, dependsOn, taskGroup),
+      repo?: string;
+    }) => api.createTask(prompt, name, dependsOn, taskGroup, repo),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tasks", project] });
       qc.invalidateQueries({ queryKey: ["taskGraph", project] });

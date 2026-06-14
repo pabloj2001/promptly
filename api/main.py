@@ -18,6 +18,7 @@ from .routers import (
     operations,
     permissions,
     projects,
+    repos,
     settings,
     tasks,
 )
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(operations.router)
     app.include_router(permissions.router)
     app.include_router(settings.router)
+    app.include_router(repos.router)
     app.include_router(internal.router)
 
     @app.get("/health")

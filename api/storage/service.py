@@ -26,6 +26,8 @@ from ..models import (
     Operation,
     PermissionRequest,
     PermissionsConfig,
+    ProjectRepo,
+    ProjectRepos,
     ProjectSettings,
     ProgressState,
     ProgressStatus,
@@ -216,6 +218,7 @@ class StorageService:
         depends_on: Optional[list[str]] = None,
         task_group: Optional[str] = None,
         custom: Optional[dict[str, Any]] = None,
+        repo: Optional[str] = None,
     ) -> MetadataEntry:
         type_val = type.value if isinstance(type, DocType) else type
         collection = self._collection_for(type_val)
@@ -251,6 +254,7 @@ class StorageService:
             task_group=task_group,
             depends_on=depends_on,
             custom=custom or {},
+            repo=repo if type_val == DocType.task.value else None,
             file=file,
             created_at=now,
             updated_at=now,
@@ -409,6 +413,47 @@ class StorageService:
         )
         return settings
 
+    # ── Repo registry (10) ────────────────────────────────────────────────────────
+
+    def read_repos(self, root: str, name: str) -> ProjectRepos:
+        raw = read_json(paths.repos_path(root, name))
+        repos = ProjectRepos.model_validate(raw) if raw else ProjectRepos()
+        # Always present a primary entry (the project root), even before anything is
+        # saved, so callers can rely on exactly one primary.
+        if not any(r.primary for r in repos.repos):
+            repos.repos.insert(
+                0, ProjectRepo(id="primary", name=Path(root).name, primary=True))
+        return repos
+
+    def write_repos(self, root: str, name: str, repos: ProjectRepos) -> ProjectRepos:
+        out: list[ProjectRepo] = []
+        seen_primary = False
+        for r in repos.repos:
+            if r.primary:
+                if seen_primary:
+                    continue  # collapse stray extra primaries
+                seen_primary = True
+                r.id, r.url = "primary", ""
+            else:
+                if not r.url.strip():
+                    raise ValidationError(f"repo {r.name!r} needs a clone url")
+                r.id = r.id or _new_id()
+            out.append(r)
+        if not seen_primary:
+            out.insert(0, ProjectRepo(id="primary", name=Path(root).name, primary=True))
+        normalized = ProjectRepos(repos=out)
+        write_json(paths.repos_path(root, name), normalized.model_dump(by_alias=True))
+        return normalized
+
+    def resolve_repo(self, root: str, name: str, repo_id: Optional[str]) -> ProjectRepo:
+        """The ProjectRepo a task targets; None/unknown falls back to the primary."""
+        repos = self.read_repos(root, name).repos
+        if repo_id:
+            for r in repos:
+                if r.id == repo_id:
+                    return r
+        return next(r for r in repos if r.primary)
+
     # ── Async operations (03/05) ──────────────────────────────────────────────────
 
     def create_placeholder(
@@ -421,6 +466,7 @@ class StorageService:
         depends_on: Optional[list[str]] = None,
         task_group: Optional[str] = None,
         custom: Optional[dict[str, Any]] = None,
+        repo: Optional[str] = None,
     ) -> MetadataEntry:
         """Create a metadata entry with an empty body and a running ``generate``
         operation, so it shows in the sidebar (with a spinner) immediately. The
@@ -428,6 +474,7 @@ class StorageService:
         entry = self.create_entry(
             root, name, type=type, display_name=provisional_name, body="",
             description="", depends_on=depends_on, task_group=task_group, custom=custom,
+            repo=repo,
         )
         op = Operation(type="generate", status="running", started_at=_now())
         collection = self._collection_for(entry.type)

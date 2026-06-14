@@ -17,6 +17,7 @@ import type {
   MetadataEntry,
   PermissionsConfig,
   ProgressState,
+  ProjectRepos,
   ProjectSettings,
   ProjectDescriptor,
   RelatedPR,
@@ -114,11 +115,17 @@ export const api = {
   listTasks: () => request<MetadataEntry[]>("/tasks", { scoped: true }),
   getTask: (id: string) => request<DocOut>(`/tasks/${id}`, { scoped: true }),
   taskGraph: () => request<DependencyGraph>("/tasks/graph", { scoped: true }),
-  createTask: (prompt: string, name?: string, dependsOn: string[] = [], taskGroup?: string) =>
+  createTask: (
+    prompt: string,
+    name?: string,
+    dependsOn: string[] = [],
+    taskGroup?: string,
+    repo?: string,
+  ) =>
     request<MetadataEntry>("/tasks", {
       method: "POST",
       scoped: true,
-      body: { prompt, name, dependsOn, taskGroup },
+      body: { prompt, name, dependsOn, taskGroup, repo },
     }),
   generateTasksFromSpec: () =>
     request<MetadataEntry[]>("/tasks/generate-from-spec", {
@@ -184,6 +191,9 @@ export const api = {
       scoped: true,
       body: { message },
     }),
+  getRepos: () => request<ProjectRepos>("/repos", { scoped: true }),
+  putRepos: (repos: ProjectRepos) =>
+    request<ProjectRepos>("/repos", { method: "PUT", scoped: true, body: repos }),
   getSettings: () => request<ProjectSettings>("/settings", { scoped: true }),
   putSettings: (settings: ProjectSettings) =>
     request<ProjectSettings>("/settings", {

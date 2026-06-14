@@ -199,6 +199,30 @@ def test_settings_defaults_and_update(client, proj):
     assert client.get("/settings", params=q(proj)).json()["instructions"] == "run the build"
 
 
+def test_repos_registry_defaults_and_update(client, proj):
+    # A primary repo is always present, even before anything is saved.
+    repos = client.get("/repos", params=q(proj)).json()["repos"]
+    assert len(repos) == 1 and repos[0]["primary"] and repos[0]["id"] == "primary"
+
+    # Add an additional repo; primary is preserved and the new one gets an id.
+    body = {"repos": repos + [{"id": "", "name": "lib", "url": "https://x/lib.git"}]}
+    saved = client.put("/repos", params=q(proj), json=body).json()["repos"]
+    assert len(saved) == 2 and saved[1]["name"] == "lib" and saved[1]["id"]
+    assert sum(r["primary"] for r in saved) == 1
+
+    # A non-primary repo without a url is rejected.
+    bad = {"repos": [{"id": "", "name": "nopath", "url": ""}]}
+    assert client.put("/repos", params=q(proj), json=bad).status_code == 422
+
+
+def test_create_task_with_repo(client, proj):
+    repos = client.get("/repos", params=q(proj)).json()["repos"]
+    body = {"repos": repos + [{"id": "", "name": "lib", "url": "https://x/lib.git"}]}
+    lib_id = client.put("/repos", params=q(proj), json=body).json()["repos"][1]["id"]
+    t = client.post("/tasks", params=q(proj), json={"prompt": "do x", "repo": lib_id}).json()
+    assert t["repo"] == lib_id
+
+
 def test_create_project_spec_and_flag(client, proj):
     client.post("/docs", params=q(proj),
                 json={"prompt": "the spec", "type": "project_spec", "name": "Spec"})

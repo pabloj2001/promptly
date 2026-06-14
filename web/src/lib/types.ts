@@ -47,6 +47,7 @@ export interface MetadataEntry {
   executionId?: string | null;
   executionError?: boolean;
   executionBlocked?: boolean;
+  repo?: string | null;
   operation?: Operation | null;
   file: string;
   createdAt: string;
@@ -77,6 +78,18 @@ export interface PermissionProfile {
 export interface ProjectSettings {
   // Default directions appended to every build/plan prompt for this project.
   instructions: string;
+}
+
+export interface ProjectRepo {
+  id: string;
+  name: string;
+  url: string;
+  defaultBranch: string;
+  primary: boolean;
+}
+
+export interface ProjectRepos {
+  repos: ProjectRepo[];
 }
 
 export interface PermissionsConfig {

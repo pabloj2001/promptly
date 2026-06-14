@@ -101,6 +101,8 @@ class MetadataEntry(CamelModel):
     depends_on: list[str] = Field(default_factory=list)
     custom: dict[str, Any] = Field(default_factory=dict)
     execution_id: Optional[str] = None
+    # Target repo id for this task (10); None ⇒ the project-primary repo.
+    repo: Optional[str] = None
     operation: Optional[Operation] = None
     # True when this task's execution hit an error needing user attention (the Build
     # sidebar highlights it red); cleared on resume/completion.
@@ -233,6 +235,22 @@ class ChatHistory(CamelModel):
 
 
 # ── Per-project permissions config (09) ───────────────────────────────────────
+
+
+class ProjectRepo(CamelModel):
+    """One git repo referenced by a project (10). The ``primary`` repo is the project
+    ``root`` (id ``"primary"``, no ``url`` — it's local); additional repos are cloned
+    from ``url`` into the execution workspace."""
+
+    id: str
+    name: str
+    url: str = ""
+    default_branch: str = ""
+    primary: bool = False
+
+
+class ProjectRepos(CamelModel):
+    repos: list[ProjectRepo] = Field(default_factory=list)
 
 
 class ProjectSettings(CamelModel):

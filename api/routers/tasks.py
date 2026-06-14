@@ -68,7 +68,7 @@ async def create_task(
     entry = storage.create_placeholder(
         ap.root, ap.name, type=DocType.task,
         provisional_name=req.name or provisional_name(req.prompt),
-        depends_on=req.depends_on, task_group=req.task_group,
+        depends_on=req.depends_on, task_group=req.task_group, repo=req.repo,
     )
     ops.start_generation(
         ap.root, ap.name, entry.id, COLLECTION,
