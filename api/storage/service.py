@@ -142,7 +142,15 @@ class StorageService:
         registry.touch_project(name)
 
     def remove_project(self, name: str) -> None:
+        """Unregister the project AND delete its on-disk data
+        (``<root>/projects/<slug>/`` — docs, tasks, executions/worktrees). The user's
+        own code is untouched."""
+        import shutil
+
+        desc = registry.get_project(name)
         registry.remove_project(name)
+        if desc is not None:
+            shutil.rmtree(paths.project_dir(desc.root, name), ignore_errors=True)
 
     def ensure_gitignore(self, root: str) -> None:
         """Idempotently ensure the root ``.gitignore`` ignores execution runtime

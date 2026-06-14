@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
+  useDeleteProject,
   useRepos,
   useSaveRepos,
   useSaveSettings,
   useSettings,
 } from "../../lib/queries";
+import { useUiStore } from "../../store";
 import type { ProjectRepo } from "../../lib/types";
 
 // Per-project settings modal: default build instructions + the repo registry
@@ -15,9 +18,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const saveSettings = useSaveSettings();
   const saveRepos = useSaveRepos();
 
+  const project = useUiStore((s) => s.activeProject);
+  const navigate = useNavigate();
+  const del = useDeleteProject();
+
   const [text, setText] = useState("");
   const [repos, setRepos] = useState<ProjectRepo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (settings) setText(settings.instructions);
@@ -41,6 +49,17 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const updateRepo = (i: number, patch: Partial<ProjectRepo>) =>
     setRepos((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const removeRepo = (i: number) => setRepos((rs) => rs.filter((_, j) => j !== i));
+
+  async function handleDelete() {
+    if (!project) return;
+    setError(null);
+    try {
+      await del.mutateAsync(project);
+      navigate("/");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
 
   async function handleSave() {
     setError(null);
@@ -151,6 +170,42 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             >
               + Add repository
             </button>
+          </section>
+
+          <section className="flex flex-col gap-2 rounded-md border border-red-200 bg-red-50 p-3">
+            <label className="text-sm font-medium text-red-800">Danger zone</label>
+            <p className="text-xs text-red-700/80">
+              Delete this project's Promptly data (docs, tasks, executions/worktrees) from
+              the repo. Your own source code is untouched. This cannot be undone.
+            </p>
+            {confirmDelete ? (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-red-800">
+                  Permanently delete <strong>{project}</strong>?
+                </span>
+                <button
+                  className="ml-auto rounded-md px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100"
+                  onClick={() => setConfirmDelete(false)}
+                  disabled={del.isPending}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                  onClick={handleDelete}
+                  disabled={del.isPending}
+                >
+                  {del.isPending ? "Deleting…" : "Delete permanently"}
+                </button>
+              </div>
+            ) : (
+              <button
+                className="self-start rounded-md border border-red-300 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
+                onClick={() => setConfirmDelete(true)}
+              >
+                Delete project
+              </button>
+            )}
           </section>
 
           {error && <p className="text-sm text-red-600">{error}</p>}

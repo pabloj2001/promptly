@@ -47,9 +47,14 @@ def test_gitignore_idempotent(storage, root, promptly_home):
 
 
 def test_remove_project(storage, root, promptly_home):
+    from api.storage import paths
+
     storage.create_project("Gone", root)
+    pdir = paths.project_dir(root, "Gone")
+    assert pdir.exists()
     storage.remove_project("Gone")
     assert storage.get_project("Gone") is None
+    assert not pdir.exists()  # on-disk project data deleted from the repo
 
 
 # ── metadata CRUD ───────────────────────────────────────────────────────────────
