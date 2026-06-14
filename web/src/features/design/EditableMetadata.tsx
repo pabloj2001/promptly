@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { StatusSelect } from "../../components/StatusSelect";
-import { usePatchMetadata, useSetTaskStatus, useTasks } from "../../lib/queries";
+import { usePatchMetadata, useRepos, useSetTaskStatus, useTasks } from "../../lib/queries";
 import type { MetadataEntry, TaskStatus } from "../../lib/types";
 import { collectionForType } from "./util";
 
@@ -11,6 +11,8 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
   const patch = usePatchMetadata();
   const setStatus = useSetTaskStatus();
   const { data: tasks } = useTasks();
+  const { data: reposData } = useRepos();
+  const repos = reposData?.repos ?? [];
   const [newKey, setNewKey] = useState("");
   const [newVal, setNewVal] = useState("");
   const [addingGroup, setAddingGroup] = useState(false);
@@ -99,6 +101,27 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
           </select>
         )}
       </div>
+
+      {entry.type === "task" && repos.length > 1 && (
+        <div>
+          <label className="text-xs uppercase tracking-wide text-slate-400">Repository</label>
+          <select
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none"
+            value={entry.repo ?? "primary"}
+            onChange={(e) => {
+              if (e.target.value !== (entry.repo ?? "primary"))
+                savePatch({ repo: e.target.value });
+            }}
+          >
+            {repos.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+                {r.primary ? " (primary)" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {entry.dependsOn.length > 0 && (
         <div>
