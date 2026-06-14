@@ -290,27 +290,30 @@ class ClaudeService:
     def render_execute_prompt(
         self, root: str, project: str, *, task_name: str, task_file: str,
         worktree: str, dependency_names: list[str], steps: list,
+        primary_dir: Optional[str] = None, workspace: Optional[str] = None,
+        context_repos: Optional[list[dict]] = None,
     ) -> str:
         # Inline the task spec (Claude must have it verbatim). The project spec and
-        # sibling docs/tasks are read by path from the worktree's own copies (the
-        # worktree is a checkout containing the committed project docs), so reads stay
-        # confined to the worktree.
+        # sibling docs/tasks are read by path from the PRIMARY repo's checkout (it holds
+        # the committed project docs). ``worktree`` is the writable TARGET repo; context
+        # repos (read-only) are listed so the model knows where cross-repo code lives.
         from pathlib import Path
 
         pdir = paths.project_dir(root, project)
         tf = pdir / task_file
         task_spec = tf.read_text(encoding="utf-8")[:_BODY_BUDGET] if tf.exists() else ""
-        proj_in_wt = Path(worktree) / pdir.relative_to(root)
+        proj_in_primary = Path(primary_dir or worktree) / pdir.relative_to(root)
         return self.prompts.render(
             "execute_task",
             project_name=project,
             task_name=task_name,
             task_spec=task_spec,
             steps=[{"title": s.title, "detail": s.detail} for s in steps],
-            project_spec_path=str(proj_in_wt / "project.md"),
-            docs_dir=str(proj_in_wt / "docs"),
-            tasks_dir=str(proj_in_wt / "tasks"),
+            project_spec_path=str(proj_in_primary / "project.md"),
+            docs_dir=str(proj_in_primary / "docs"),
+            tasks_dir=str(proj_in_primary / "tasks"),
             worktree=worktree,
+            context_repos=context_repos or [],
             dependency_names=dependency_names,
             instructions=self.storage.read_settings(root, project).instructions,
         )
@@ -325,6 +328,7 @@ class ClaudeService:
         prompt: str,
         session_id: Optional[str] = None,
         granted: Optional[list[PermissionRequest]] = None,
+        workspace: Optional[str] = None,
     ) -> RunSpec:
         """Compile a build-session ``claude -p`` invocation (07).
 
@@ -350,6 +354,10 @@ class ClaudeService:
         # to be added. No --add-dir of the repo/project dir => no executions/ or
         # whole-repo exposure. Users can still widen via additionalReadDirs.
         read_dirs = list(cfg.additional_read_dirs)
+        # Multi-repo (10): the writable target repo is the cwd; its sibling context
+        # repos live under the workspace, so expose the workspace for reads.
+        if workspace and workspace != worktree:
+            read_dirs.append(workspace)
         settings["permissions"]["additionalDirectories"] = read_dirs
 
         callback_env = {

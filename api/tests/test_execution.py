@@ -117,6 +117,64 @@ def test_diff_includes_untracked_and_nested_repos(root, tmp_path):
     assert "subproj" not in paths               # the nested repo dir isn't a bare entry
 
 
+def test_clone_repo_and_detached_worktree(root, tmp_path):
+    from pathlib import Path
+
+    _seed_repo(root)
+    dest = tmp_path / "clone"
+    base = worktree.clone_repo(str(root), str(dest), branch="promptly/x")
+    assert base and Path(dest, "README.md").exists()
+    head = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                          cwd=dest, capture_output=True, text=True).stdout.strip()
+    assert head == "promptly/x"
+
+    ctx = tmp_path / "ctx"
+    worktree.add_worktree_detached(root, str(ctx), worktree.current_branch(root))
+    assert Path(ctx, "README.md").exists()
+    head2 = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                           cwd=ctx, capture_output=True, text=True).stdout.strip()
+    assert head2 == "HEAD"  # detached
+
+
+async def test_start_builds_multi_repo_workspace(storage, root, tmp_path):
+    """start() clones the task's target (additional) repo plus the primary repo as
+    read-only context, under executions/<id>/workspace/."""
+    from pathlib import Path
+
+    from api.models import ProjectRepo, ProjectRepos
+    from api.storage import paths
+
+    _seed_repo(root)
+    src = tmp_path / "libsrc"  # a second local repo = the additional repo's source
+    src.mkdir()
+    _git(["init", "-q"], str(src))
+    _seed_repo(str(src))
+
+    storage.create_project("Demo", root)
+    repos = storage.read_repos(root, "Demo").repos
+    saved = storage.write_repos(root, "Demo", ProjectRepos(
+        repos=repos + [ProjectRepo(id="", name="lib", url=str(src))]))
+    lib_id = next(r.id for r in saved.repos if r.name == "lib")
+    task = storage.create_entry(root, "Demo", type="task", display_name="Work", repo=lib_id)
+
+    class PlanFails:
+        async def plan_execution_steps(self, **k):
+            raise RuntimeError("stop after workspace setup")
+
+    em = ExecutionManager(storage, SSEBus(), claude=PlanFails())
+    prog = await em.start(root, "Demo", task.id)
+
+    import asyncio
+    await asyncio.sleep(0.2)  # let the (failing) plan task settle
+
+    ws = paths.workspace_path(root, "Demo", prog.execution_id)
+    assert Path(ws, "lib", ".git").exists()       # target repo cloned
+    assert Path(ws, "lib", "README.md").exists()
+    assert Path(ws, Path(root).name).exists()     # primary checked out as context
+    saved_prog = storage.read_progress(root, "Demo", prog.execution_id)
+    assert saved_prog.repo == lib_id and saved_prog.repo_dir == "lib"
+
+
 def test_merge_branches_and_branch_exists(root, tmp_path):
     from pathlib import Path
 
@@ -386,7 +444,7 @@ async def test_run_loop_completes_and_commits(storage, root, tmp_path, monkeypat
 
     class FakeClaude:
         def build_run_command(self, root, project, *, execution_id, worktree,
-                              prompt, session_id=None, granted=None):
+                              prompt, session_id=None, granted=None, workspace=None):
             return RunSpec(args=[sys.executable, "-c", fake],
                            env=dict(__import__("os").environ), cwd=worktree)
 
@@ -425,7 +483,7 @@ async def test_run_loop_handles_oversized_line(storage, root, tmp_path):
 
     class FakeClaude:
         def build_run_command(self, root, project, *, execution_id, worktree,
-                              prompt, session_id=None, granted=None):
+                              prompt, session_id=None, granted=None, workspace=None):
             return RunSpec(args=[sys.executable, "-c", fake],
                            env=dict(__import__("os").environ), cwd=worktree)
 

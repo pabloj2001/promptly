@@ -125,23 +125,49 @@ class ExecutionManager:
         self.storage.create_execution(root, project, execution_id, task_id)
         self.storage.ensure_gitignore(root)
 
-        # Commit the project's docs + pull the latest base so the worktree starts
-        # from the current, shared state (07).
+        # Multi-repo workspace (10): check out the task's TARGET repo (writable) plus
+        # every other project repo read-only for context, under executions/<id>/workspace.
+        repos = self.storage.read_repos(root, project).repos
+        dirnames = _repo_dirnames(repos)
+        target = self.storage.resolve_repo(root, project, task.repo)
+
+        # Always commit project docs + sync the primary base (docs live in the primary).
         base_branch = self._prepare_base(root, project)
 
-        wt = str(paths.worktree_path(root, project, execution_id))
+        ws = paths.workspace_path(root, project, execution_id)
         from ..storage.slug import slugify
         branch = worktree.branch_name(slugify(task.name), execution_id)
-        base_sha = worktree.add_worktree(root, wt, branch, base=base_branch)
+        target_dir = str(ws / dirnames[target.id])
+        if target.primary:
+            base_sha = worktree.add_worktree(root, target_dir, branch, base=base_branch)
+        else:
+            base_sha = worktree.clone_repo(
+                target.url, target_dir, branch=branch,
+                base_branch=target.default_branch or None)
 
-        # If this task depends on tasks that are in review and pushed (not yet merged
-        # to the base), build on top of their branches: merge them into the fresh
-        # worktree so their work is present, and base the diff on the post-merge tip.
+        ctx_failed: list[str] = []
+        for r in repos:
+            if r.id == target.id:
+                continue
+            cdir = str(ws / dirnames[r.id])
+            try:
+                if r.primary:
+                    worktree.add_worktree_detached(root, cdir, base_branch)
+                else:
+                    worktree.clone_repo(r.url, cdir, base_branch=r.default_branch or None)
+            except worktree.GitError:
+                ctx_failed.append(r.name)  # context is best-effort
+
+        # Build on in-review, pushed dependencies that target THIS repo.
         prefix, base_sha = self._merge_dependency_branches(
-            root, project, task, wt, base_sha)
+            root, project, task, target_dir, base_sha, target.id)
+        if ctx_failed:
+            prefix += ("NOTE: some context repos could not be cloned ("
+                       + ", ".join(ctx_failed) + "); proceed without them.\n\n")
 
         self.storage.set_execution_meta(
-            root, project, execution_id, branch=branch, base_sha=base_sha
+            root, project, execution_id, branch=branch, base_sha=base_sha,
+            repo=target.id, repo_dir=dirnames[target.id],
         )
 
         # Two-way link: task -> execution, status in_progress.
@@ -156,13 +182,35 @@ class ExecutionManager:
         # Plan first (separate MCP-free call), then run the build session. Done in a
         # spawned task so start() returns immediately; steps stream in over SSE.
         self._spawn_tracked(execution_id, self._plan_then_run(
-            root, project, execution_id, task_id, task.name, task.file, wt, deps,
+            root, project, execution_id, task_id, task.name, task.file, deps,
             prompt_prefix=prefix))
         return self.storage.read_progress(root, project, execution_id)
 
+    def _workspace_layout(self, root: str, project: str, execution_id: str) -> dict:
+        """Resolve the on-disk layout for an execution (10): the writable ``target_dir``,
+        the ``primary_dir`` (holds project docs), the ``workspace`` root (reads), and the
+        read-only ``context`` repos. Falls back to the legacy single-``worktree`` layout
+        for executions created before multi-repo (no ``repo_dir``)."""
+        prog = self.storage.read_progress(root, project, execution_id)
+        if not prog or not prog.repo_dir:
+            wt = str(paths.worktree_path(root, project, execution_id))
+            return {"workspace": wt, "target_dir": wt, "primary_dir": wt, "context": []}
+        repos = self.storage.read_repos(root, project).repos
+        dirnames = _repo_dirnames(repos)
+        primary = next(r for r in repos if r.primary)
+        ws = paths.workspace_path(root, project, execution_id)
+        target_id = prog.repo or primary.id
+        return {
+            "workspace": str(ws),
+            "target_dir": str(ws / prog.repo_dir),
+            "primary_dir": str(ws / dirnames[primary.id]),
+            "context": [{"name": r.name, "path": str(ws / dirnames[r.id])}
+                        for r in repos if r.id != target_id],
+        }
+
     async def _plan_then_run(
         self, root: str, project: str, execution_id: str, task_id: str,
-        task_name: str, task_file: str, worktree_dir: str, deps: list[str],
+        task_name: str, task_file: str, deps: list[str],
         prompt_prefix: str = "",
     ) -> None:
         """Phase 1: ask Claude to break the task into steps and seed them (first
@@ -192,9 +240,12 @@ class ExecutionManager:
         )
         self.publish_progress(execution_id, "steps", state)
 
+        layout = self._workspace_layout(root, project, execution_id)
         prompt = prompt_prefix + self.claude.render_execute_prompt(
             root, project, task_name=task_name, task_file=task_file,
-            worktree=worktree_dir, dependency_names=deps, steps=state.steps,
+            worktree=layout["target_dir"], primary_dir=layout["primary_dir"],
+            workspace=layout["workspace"], context_repos=layout["context"],
+            dependency_names=deps, steps=state.steps,
         )
         await self._run(root, project, execution_id, task_id, prompt)
 
@@ -264,11 +315,12 @@ class ExecutionManager:
     ) -> dict:
         """Spawn one build turn; stream its live activity; return its command +
         session id + exit info."""
-        wt = str(paths.worktree_path(root, project, execution_id))
+        layout = self._workspace_layout(root, project, execution_id)
         granted = [p for p in self.storage.read_progress(root, project, execution_id)
                    .pending_permissions if p.decision == "allow"]
         spec = self.claude.build_run_command(
-            root, project, execution_id=execution_id, worktree=wt,
+            root, project, execution_id=execution_id,
+            worktree=layout["target_dir"], workspace=layout["workspace"],
             prompt=prompt, session_id=session_id, granted=granted,
         )
 
@@ -474,7 +526,7 @@ class ExecutionManager:
     def _complete(
         self, root: str, project: str, execution_id: str, task_id: str, summary: str
     ) -> None:
-        wt = str(paths.worktree_path(root, project, execution_id))
+        wt = self._workspace_layout(root, project, execution_id)["target_dir"]
         task = self.storage.get_entry(root, project, "tasks", task_id)
         message = f"{task.name}\n\n{summary}".strip() if summary else task.name
         if summary:
@@ -493,11 +545,15 @@ class ExecutionManager:
 
     # ── Dependency chaining (build on in-review, pushed deps) ────────────────────
 
-    def _pushed_in_review_deps(self, root: str, project: str, task) -> list[tuple[str, str]]:
+    def _pushed_in_review_deps(
+        self, root: str, project: str, task, target_repo_id: Optional[str] = None,
+    ) -> list[tuple[str, str]]:
         """``(dep_name, branch)`` for each direct dependency that is **in review and
         pushed** — its work isn't on the base branch yet, so a dependent task must
         build on top of it. "Pushed" == it has a related PR (we push when creating
-        the PR). ``done`` deps are already merged into the base, so they're skipped."""
+        the PR). ``done`` deps are already merged into the base, so they're skipped.
+        Only deps targeting ``target_repo_id`` are returned (branches from another repo
+        can't be merged here — cross-repo deps are handled separately, 10)."""
         tasks_meta = self.storage.read_metadata(root, project, "tasks")
         out: list[tuple[str, str]] = []
         for dep_id in task.depends_on:
@@ -505,6 +561,8 @@ class ExecutionManager:
             if dep is None or dep.status != TaskStatus.in_review.value:
                 continue
             if not dep.related_prs or not dep.execution_id:
+                continue
+            if target_repo_id is not None and (dep.repo or "primary") != target_repo_id:
                 continue
             dep_prog = self.storage.read_progress(root, project, dep.execution_id)
             if dep_prog is None or not dep_prog.branch:
@@ -516,13 +574,14 @@ class ExecutionManager:
 
     def _merge_dependency_branches(
         self, root: str, project: str, task, wt: str, base_sha: str,
+        target_repo_id: Optional[str] = None,
     ) -> tuple[str, str]:
         """Merge the branches of in-review, pushed dependencies into the fresh worktree
         ``wt``. Returns ``(prompt_prefix, base_sha)``: on a clean merge the base_sha
         advances to the post-merge tip (so the task's diff excludes the already-reviewed
         dependency work) and the prefix tells the AI it's building on them; on conflict
         the base_sha stays at the original tip and the prefix asks the AI to resolve."""
-        deps = self._pushed_in_review_deps(root, project, task)
+        deps = self._pushed_in_review_deps(root, project, task, target_repo_id)
         if not deps:
             return "", base_sha
         names = [n for n, _ in deps]
@@ -568,7 +627,12 @@ class ExecutionManager:
         the merge conflicts, return an instruction telling the build session to
         resolve them first; otherwise return an empty string."""
         branch = self._prepare_base(root, project)
-        wt = str(paths.worktree_path(root, project, execution_id))
+        prog = self.storage.read_progress(root, project, execution_id)
+        # The primary base branch only applies to a primary-target worktree; additional
+        # repos are independent clones, so there's nothing to merge from it (10).
+        if prog and prog.repo and prog.repo != "primary":
+            return ""
+        wt = self._workspace_layout(root, project, execution_id)["target_dir"]
         result = worktree.sync_worktree(wt, branch)
         if not result["conflicts"]:
             return ""
@@ -671,13 +735,12 @@ class ExecutionManager:
 
         if not prog.session_id:
             task = self.storage.get_entry(root, project, "tasks", prog.task_id)
-            wt = str(paths.worktree_path(root, project, execution_id))
             deps = [self.storage.get_entry(root, project, "tasks", d).name
                     for d in task.depends_on
                     if (self.storage.read_metadata(root, project, "tasks").get(d))]
             self._spawn_tracked(execution_id, self._plan_then_run(
                 root, project, execution_id, prog.task_id,
-                task.name, task.file, wt, deps))
+                task.name, task.file, deps))
             return self.storage.read_progress(root, project, execution_id)
 
         # Reconcile: if the last recorded command was a question/issue, pause instead.
@@ -723,7 +786,7 @@ class ExecutionManager:
         prog = self.storage.read_progress(root, project, execution_id)
         if prog is None or not prog.branch:
             raise NotFoundError(f"execution {execution_id} not found")
-        wt = str(paths.worktree_path(root, project, execution_id))
+        wt = self._workspace_layout(root, project, execution_id)["target_dir"]
         task = self.storage.get_entry(root, project, "tasks", prog.task_id)
         worktree.push_branch(wt, prog.branch)
         title = task.name
@@ -749,7 +812,7 @@ class ExecutionManager:
         prog = self.storage.read_progress(root, project, execution_id)
         if prog is None or not prog.base_sha:
             raise NotFoundError(f"execution {execution_id} not found")
-        wt = str(paths.worktree_path(root, project, execution_id))
+        wt = self._workspace_layout(root, project, execution_id)["target_dir"]
         return worktree.diff(wt, prog.base_sha)
 
     # ── Startup recovery ─────────────────────────────────────────────────────────
@@ -790,6 +853,19 @@ class ExecutionManager:
 def _uuid() -> str:
     import uuid
     return str(uuid.uuid4())
+
+
+def _repo_dirnames(repos) -> dict[str, str]:
+    """Stable, unique on-disk dir name per repo id (10), derived from the repo name."""
+    from ..storage.slug import dedupe_slug, slugify
+
+    taken: set[str] = set()
+    out: dict[str, str] = {}
+    for r in repos:
+        d = dedupe_slug(slugify(r.name) or r.id, taken)
+        taken.add(d)
+        out[r.id] = d
+    return out
 
 
 def _pr_number(url: str) -> int:

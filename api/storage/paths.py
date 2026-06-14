@@ -79,6 +79,12 @@ def worktree_path(root: str, name: str, execution_id: str) -> Path:
     return execution_dir(root, name, execution_id) / "worktree"
 
 
+def workspace_path(root: str, name: str, execution_id: str) -> Path:
+    """Multi-repo workspace (10): holds one checkout/clone per project repo under
+    ``executions/<id>/workspace/<repo>``."""
+    return execution_dir(root, name, execution_id) / "workspace"
+
+
 def ensure_skeleton(root: str, name: str) -> Path:
     """Create the empty project dir layout (docs/, tasks/, executions/ + empty
     metadata maps). Idempotent. Does NOT create ``project.md`` — that is the

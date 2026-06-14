@@ -169,6 +169,8 @@ class ProgressState(CamelModel):
     branch: Optional[str] = None
     base_sha: Optional[str] = None
     session_id: Optional[str] = None
+    repo: Optional[str] = None       # target repo id (10); None ⇒ primary / legacy
+    repo_dir: Optional[str] = None   # target repo's dir name under the workspace
     status: ProgressStatus = ProgressStatus.running
     error: Optional[str] = None
     activity: Optional[str] = None  # latest live line-of-thinking (compact)

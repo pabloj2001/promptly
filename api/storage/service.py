@@ -681,7 +681,8 @@ class StorageService:
     def set_execution_meta(
         self, root: str, name: str, execution_id: str, *,
         branch: Optional[str] = None, base_sha: Optional[str] = None,
-        session_id: Optional[str] = None,
+        session_id: Optional[str] = None, repo: Optional[str] = None,
+        repo_dir: Optional[str] = None,
     ) -> ProgressState:
         def fn(s: ProgressState) -> None:
             if branch is not None:
@@ -690,6 +691,10 @@ class StorageService:
                 s.base_sha = base_sha
             if session_id is not None:
                 s.session_id = session_id
+            if repo is not None:
+                s.repo = repo
+            if repo_dir is not None:
+                s.repo_dir = repo_dir
         return self._mutate_progress(root, name, execution_id, fn)
 
     def set_execution_status(

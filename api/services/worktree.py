@@ -58,6 +58,35 @@ def add_worktree(root: str, worktree: str | Path, branch: str, base: str = "HEAD
     return base_sha
 
 
+def add_worktree_detached(root: str, worktree: str | Path, commitish: str = "HEAD") -> str:
+    """Create a **detached** (branchless) linked worktree at ``worktree`` — used for
+    read-only context checkouts of the primary repo in a multi-repo workspace (10).
+    Returns the checked-out commit sha."""
+    sha = _git(["rev-parse", commitish], cwd=root).strip()
+    Path(worktree).parent.mkdir(parents=True, exist_ok=True)
+    _git(["worktree", "add", "--detach", str(worktree), commitish], cwd=root)
+    return sha
+
+
+def clone_repo(
+    url: str, dest: str | Path, *, branch: Optional[str] = None,
+    base_branch: Optional[str] = None,
+) -> str:
+    """Clone ``url`` into ``dest`` (10). Optionally start from ``base_branch`` and create
+    a new working ``branch``. Returns the base commit sha (the clone's HEAD before any
+    new branch)."""
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    args = ["clone"]
+    if base_branch:
+        args += ["--branch", base_branch]
+    args += [url, str(dest)]
+    _git(args, cwd=Path(dest).parent)
+    base_sha = head_sha(dest)
+    if branch:
+        _git(["checkout", "-b", branch], cwd=dest)
+    return base_sha
+
+
 # ── base-branch sync (07) ─────────────────────────────────────────────────────
 
 
