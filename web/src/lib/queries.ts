@@ -151,6 +151,24 @@ export function useImportDoc() {
   });
 }
 
+export function useDeleteEntry() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: ({ collection, id }: { collection: Collection; id: string }) =>
+      api.deleteEntry(collection, id),
+    onSuccess: (_data, { collection }) => {
+      if (collection === "tasks") {
+        qc.invalidateQueries({ queryKey: ["tasks", project] });
+        qc.invalidateQueries({ queryKey: ["taskGraph", project] });
+      } else {
+        qc.invalidateQueries({ queryKey: ["docs", project] });
+      }
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
 export function useGenerateTasksFromSpec() {
   const qc = useQueryClient();
   const project = useProject();

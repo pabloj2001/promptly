@@ -1,12 +1,12 @@
 import { useState } from "react";
-import { PromptDialog, type PromptResult } from "../../components/PromptDialog";
 import { Spinner } from "../../components/Spinner";
 import { GenerateTasksButton } from "../../components/GenerateTasksButton";
 import { STATUS_META } from "../../lib/status";
-import { useCreateDoc, useCreateTask, useDocs, useTasks } from "../../lib/queries";
+import { useDeleteEntry, useDocs, useTasks } from "../../lib/queries";
+import type { Collection } from "../../lib/api";
 import type { MetadataEntry } from "../../lib/types";
 import { EditableMetadata } from "./EditableMetadata";
-import { ImportDialog } from "./ImportDialog";
+import { AddEntryDialog } from "./AddEntryDialog";
 
 type NewKind = "doc" | "task" | null;
 
@@ -24,50 +24,44 @@ export function Sidebar({
   const [showRemoved, setShowRemoved] = useState(false);
   const [metaOpen, setMetaOpen] = useState(true);
   const [newKind, setNewKind] = useState<NewKind>(null);
-  const [importing, setImporting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const createDoc = useCreateDoc();
-  const createTask = useCreateTask();
+  const deleteEntry = useDeleteEntry();
 
   const spec = docs?.find((d) => d.type === "project_spec") ?? null;
-  const supplemental = (docs ?? []).filter((d) => d.type === "doc");
+  const supplemental = (docs ?? []).filter(
+    (d) => d.type === "doc" && (showRemoved || d.status !== "removed"),
+  );
   const visibleTasks = (tasks ?? []).filter(
     (t) => showRemoved || t.status !== "removed",
   );
 
-  const submitNew = async (r: PromptResult) => {
-    setError(null);
-    try {
-      const entry =
-        newKind === "task"
-          ? await createTask.mutateAsync({
-              prompt: r.prompt,
-              name: r.name,
-              dependsOn: r.dependsOn,
-            })
-          : await createDoc.mutateAsync({
-              prompt: r.prompt,
-              type: "doc",
-              name: r.name,
-            });
-      setNewKind(null);
-      onSelect(entry.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Generation failed");
-    }
+  const handleDelete = async (entry: MetadataEntry, collection: Collection) => {
+    if (
+      !window.confirm(
+        `Delete ${collection === "tasks" ? "task" : "document"} “${entry.name}”? ` +
+          `It will be marked removed (still visible under “Show removed”).`,
+      )
+    )
+      return;
+    await deleteEntry.mutateAsync({ collection, id: entry.id });
   };
 
-  const Row = ({ entry }: { entry: MetadataEntry }) => {
+  const Row = ({
+    entry,
+    collection,
+  }: {
+    entry: MetadataEntry;
+    collection: Collection;
+  }) => {
     const op = entry.operation;
     const meta = entry.status ? STATUS_META[entry.status] : null;
+    const removed = entry.status === "removed";
     return (
-      <button
-        className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm ${
+      <div
+        className={`group flex items-center gap-2 rounded px-2 py-1 text-sm ${
           selectedId === entry.id
             ? "bg-blue-100 text-blue-800"
             : "text-slate-700 hover:bg-slate-100"
         }`}
-        onClick={() => onSelect(entry.id)}
       >
         {meta && (
           <span
@@ -75,14 +69,28 @@ export function Sidebar({
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`}
           />
         )}
-        <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+        <button
+          className={`min-w-0 flex-1 truncate text-left ${removed ? "italic text-slate-400" : ""}`}
+          onClick={() => onSelect(entry.id)}
+        >
+          {entry.name}
+        </button>
         {op?.status === "running" && <Spinner className="text-slate-400" />}
         {op?.status === "failed" && (
           <span title={op.error ?? "failed"} className="text-xs text-red-500">
             ⚠
           </span>
         )}
-      </button>
+        {!removed && (
+          <button
+            className="shrink-0 rounded p-0.5 text-slate-300 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100"
+            title="Delete"
+            onClick={() => void handleDelete(entry, collection)}
+          >
+            🗑
+          </button>
+        )}
+      </div>
     );
   };
 
@@ -109,7 +117,7 @@ export function Sidebar({
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {spec && (
           <div className="mb-3">
-            <Row entry={spec} />
+            <Row entry={spec} collection="docs" />
           </div>
         )}
 
@@ -121,7 +129,7 @@ export function Sidebar({
             <div className="px-2 text-xs text-slate-400">No docs yet</div>
           )}
           {supplemental.map((d) => (
-            <Row key={d.id} entry={d} />
+            <Row key={d.id} entry={d} collection="docs" />
           ))}
         </div>
 
@@ -136,7 +144,7 @@ export function Sidebar({
             </div>
           )}
           {visibleTasks.map((t) => (
-            <Row key={t.id} entry={t} />
+            <Row key={t.id} entry={t} collection="tasks" />
           ))}
         </div>
 
@@ -163,30 +171,14 @@ export function Sidebar({
         >
           + Task
         </button>
-        <button
-          className="flex-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
-          onClick={() => setImporting(true)}
-        >
-          Import
-        </button>
       </div>
 
-      <ImportDialog
-        open={importing}
-        onOpenChange={setImporting}
-        onImported={onSelect}
-      />
-
-      <PromptDialog
+      <AddEntryDialog
         open={newKind !== null}
         onOpenChange={(o) => !o && setNewKind(null)}
-        title={newKind === "task" ? "New task spec" : "New document"}
-        description="Describe what you want; the AI will write it."
-        submitLabel="Generate"
-        busy={createDoc.isPending || createTask.isPending}
-        error={error}
+        kind={newKind ?? "doc"}
         dependencyOptions={newKind === "task" ? visibleTasks : undefined}
-        onSubmit={submitNew}
+        onCreated={onSelect}
       />
     </aside>
   );

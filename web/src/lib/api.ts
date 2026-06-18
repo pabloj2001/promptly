@@ -108,8 +108,8 @@ export const api = {
       scoped: true,
       body: { anchor, body, kind },
     }),
-  deleteDoc: (id: string) =>
-    request<MetadataEntry>(`/docs/${id}`, { method: "DELETE", scoped: true }),
+  deleteEntry: (collection: Collection, id: string) =>
+    request<MetadataEntry>(`/${collection}/${id}`, { method: "DELETE", scoped: true }),
 
   // Tasks
   listTasks: () => request<MetadataEntry[]>("/tasks", { scoped: true }),
