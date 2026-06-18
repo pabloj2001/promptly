@@ -155,6 +155,24 @@ def test_import_task_fills_group(client, proj):
     assert got["meta"]["taskGroup"] == "Imported"
 
 
+def test_import_doc_real_spawn(promptly_home, root):
+    # Regression: import_doc must be `async def` so its background-metadata spawn
+    # (asyncio.create_task) has a running loop. A sync endpoint runs in a threadpool
+    # with no loop → 500 "Internal Server Error" → the client's JSON.parse blows up.
+    from api.services.operations import OperationManager
+
+    app = create_app()
+    app.dependency_overrides[get_claude] = lambda: FakeClaude()
+    app.dependency_overrides[get_operations] = lambda: OperationManager(
+        get_storage(), FakeClaude()
+    )
+    c = TestClient(app, raise_server_exceptions=False)
+    c.post("/projects", json={"name": "Demo", "root": root})
+    r = c.post("/docs/import", params={"project": "Demo"},
+               json={"name": "Imported", "type": "doc", "body": "# Hi"})
+    assert r.status_code == 201, r.text
+
+
 def test_import_project_spec(client, proj):
     r = client.post("/docs/import", params=q(proj),
                     json={"name": "Spec", "type": "project_spec", "body": "# Spec"})

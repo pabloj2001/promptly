@@ -74,7 +74,7 @@ async def create_doc(
 
 
 @router.post("/import", response_model=MetadataEntry, status_code=201)
-def import_doc(
+async def import_doc(
     req: ImportDocRequest,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
