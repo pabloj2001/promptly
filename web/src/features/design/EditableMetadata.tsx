@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
 import { StatusSelect } from "../../components/StatusSelect";
-import { usePatchMetadata, useRepos, useSetTaskStatus, useTasks } from "../../lib/queries";
+import {
+  useDeleteEntry,
+  usePatchMetadata,
+  useRepos,
+  useSetTaskStatus,
+  useTasks,
+} from "../../lib/queries";
 import type { MetadataEntry, TaskStatus } from "../../lib/types";
 import { collectionForType } from "./util";
 
@@ -10,6 +16,7 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
   const collection = collectionForType(entry.type);
   const patch = usePatchMetadata();
   const setStatus = useSetTaskStatus();
+  const deleteEntry = useDeleteEntry();
   const { data: tasks } = useTasks();
   const { data: reposData } = useRepos();
   const repos = reposData?.repos ?? [];
@@ -27,6 +34,19 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
 
   const savePatch = (p: Record<string, unknown>) =>
     patch.mutate({ collection, id: entry.id, patch: p });
+
+  const kindLabel = entry.type === "task" ? "task" : "document";
+  const removed = entry.status === "removed";
+  const handleDelete = () => {
+    if (
+      !window.confirm(
+        `Delete ${kindLabel} “${entry.name}”? It will be marked removed ` +
+          `(still visible under “Show removed”).`,
+      )
+    )
+      return;
+    deleteEntry.mutate({ collection, id: entry.id });
+  };
 
   const custom = Object.entries(entry.custom ?? {});
 
@@ -182,6 +202,20 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
             Add
           </button>
         </div>
+      </div>
+
+      <div className="border-t border-slate-200 pt-3">
+        {removed ? (
+          <p className="text-xs text-slate-400">This {kindLabel} is removed.</p>
+        ) : (
+          <button
+            className="text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
+            onClick={handleDelete}
+            disabled={deleteEntry.isPending}
+          >
+            {deleteEntry.isPending ? "Deleting…" : `Delete ${kindLabel}`}
+          </button>
+        )}
       </div>
     </div>
   );

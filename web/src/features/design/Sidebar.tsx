@@ -2,8 +2,7 @@ import { useState } from "react";
 import { Spinner } from "../../components/Spinner";
 import { GenerateTasksButton } from "../../components/GenerateTasksButton";
 import { STATUS_META } from "../../lib/status";
-import { useDeleteEntry, useDocs, useTasks } from "../../lib/queries";
-import type { Collection } from "../../lib/api";
+import { useDocs, useTasks } from "../../lib/queries";
 import type { MetadataEntry } from "../../lib/types";
 import { EditableMetadata } from "./EditableMetadata";
 import { AddEntryDialog } from "./AddEntryDialog";
@@ -24,7 +23,6 @@ export function Sidebar({
   const [showRemoved, setShowRemoved] = useState(false);
   const [metaOpen, setMetaOpen] = useState(true);
   const [newKind, setNewKind] = useState<NewKind>(null);
-  const deleteEntry = useDeleteEntry();
 
   const spec = docs?.find((d) => d.type === "project_spec") ?? null;
   const supplemental = (docs ?? []).filter(
@@ -34,34 +32,18 @@ export function Sidebar({
     (t) => showRemoved || t.status !== "removed",
   );
 
-  const handleDelete = async (entry: MetadataEntry, collection: Collection) => {
-    if (
-      !window.confirm(
-        `Delete ${collection === "tasks" ? "task" : "document"} “${entry.name}”? ` +
-          `It will be marked removed (still visible under “Show removed”).`,
-      )
-    )
-      return;
-    await deleteEntry.mutateAsync({ collection, id: entry.id });
-  };
-
-  const Row = ({
-    entry,
-    collection,
-  }: {
-    entry: MetadataEntry;
-    collection: Collection;
-  }) => {
+  const Row = ({ entry }: { entry: MetadataEntry }) => {
     const op = entry.operation;
     const meta = entry.status ? STATUS_META[entry.status] : null;
     const removed = entry.status === "removed";
     return (
-      <div
-        className={`group flex items-center gap-2 rounded px-2 py-1 text-sm ${
+      <button
+        className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm ${
           selectedId === entry.id
             ? "bg-blue-100 text-blue-800"
             : "text-slate-700 hover:bg-slate-100"
         }`}
+        onClick={() => onSelect(entry.id)}
       >
         {meta && (
           <span
@@ -69,28 +51,16 @@ export function Sidebar({
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`}
           />
         )}
-        <button
-          className={`min-w-0 flex-1 truncate text-left ${removed ? "italic text-slate-400" : ""}`}
-          onClick={() => onSelect(entry.id)}
-        >
+        <span className={`min-w-0 flex-1 truncate ${removed ? "italic text-slate-400" : ""}`}>
           {entry.name}
-        </button>
+        </span>
         {op?.status === "running" && <Spinner className="text-slate-400" />}
         {op?.status === "failed" && (
           <span title={op.error ?? "failed"} className="text-xs text-red-500">
             ⚠
           </span>
         )}
-        {!removed && (
-          <button
-            className="shrink-0 rounded p-0.5 text-slate-300 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100"
-            title="Delete"
-            onClick={() => void handleDelete(entry, collection)}
-          >
-            🗑
-          </button>
-        )}
-      </div>
+      </button>
     );
   };
 
@@ -117,7 +87,7 @@ export function Sidebar({
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {spec && (
           <div className="mb-3">
-            <Row entry={spec} collection="docs" />
+            <Row entry={spec} />
           </div>
         )}
 
@@ -129,7 +99,7 @@ export function Sidebar({
             <div className="px-2 text-xs text-slate-400">No docs yet</div>
           )}
           {supplemental.map((d) => (
-            <Row key={d.id} entry={d} collection="docs" />
+            <Row key={d.id} entry={d} />
           ))}
         </div>
 
@@ -144,7 +114,7 @@ export function Sidebar({
             </div>
           )}
           {visibleTasks.map((t) => (
-            <Row key={t.id} entry={t} collection="tasks" />
+            <Row key={t.id} entry={t} />
           ))}
         </div>
 
