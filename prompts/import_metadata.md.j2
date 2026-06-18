@@ -1,4 +1,4 @@
-{# vars: project_name, project_path, repo_root, doc_type, body #}
+{# vars: project_name, project_path, repo_root, doc_type, body, current_name, existing_tasks #}
 {% import "_shared.md.j2" as s -%}
 A {{ doc_type }} was just imported verbatim into the software project "{{ project_name }}".
 Your job is to derive its metadata — you must NOT rewrite or change the document body.
@@ -6,18 +6,35 @@ Your job is to derive its metadata — you must NOT rewrite or change the docume
 {{ s.read_first(project_name, project_path) }}
 
 Then, from the imported document below, produce:
+- `name`: a concise, human-friendly title for this {{ doc_type }} (a few words, Title Case,
+  no file extension). The current placeholder name is "{{ current_name }}" — improve it if the
+  content suggests something clearer, otherwise keep it.
 - `description`: a single concise sentence summarizing what this {{ doc_type }} is about.
 {% if doc_type == "task" -%}
 - `taskGroup`: a short group/category name for this task. Prefer reusing an existing group
   name from `{{ project_path }}tasks/` when one fits; otherwise pick a sensible new one. Use
   an empty string if grouping doesn't apply.
+- `dependsOn`: an array of task ids (from the list below) that this task genuinely must be
+  done after. Be conservative — most tasks do NOT need a dependency. Only add one when the
+  relationship is clear from the content (this task plainly builds on or requires another). If
+  you're unsure, leave it out. Prefer an empty array over a guess. Never invent ids; only use
+  ids from the list. Never depend on this same task.
+{% if existing_tasks %}
+Existing tasks you may depend on:
+{% for t in existing_tasks -%}
+- `{{ t.id }}` — {{ t.name }}{% if t.description %}: {{ t.description }}{% endif %}
+{% endfor -%}
+{% else %}
+(There are no other tasks yet, so `dependsOn` must be an empty array.)
+{% endif %}
 {%- else -%}
 - `taskGroup`: leave as an empty string (only tasks are grouped).
+- `dependsOn`: leave as an empty array (only tasks have dependencies).
 {%- endif %}
 
 Respond with ONLY a single JSON object — no code fences, no commentary before or after —
 in exactly this shape:
-{"description": "<one sentence>", "taskGroup": "<group or empty string>"}
+{"name": "<title>", "description": "<one sentence>", "taskGroup": "<group or empty string>", "dependsOn": [<task ids or empty>]}
 
 <document>
 {{ body }}

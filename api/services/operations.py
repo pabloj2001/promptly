@@ -120,13 +120,29 @@ class OperationManager:
         """Fill metadata (description, taskGroup) for a verbatim-imported entry. The
         body is left untouched — only metadata is patched."""
         try:
-            _, body, _ = self.storage.read_document(root, project, collection, entry_id)
+            entry, body, _ = self.storage.read_document(root, project, collection, entry_id)
+            existing_tasks = None
+            if collection == "tasks":
+                existing_tasks = [
+                    {"id": t.id, "name": t.name, "description": t.description}
+                    for t in self.storage.read_metadata(root, project, "tasks").values()
+                    if t.id != entry_id and t.status != "removed"
+                ]
             meta = await self.claude.derive_import_metadata(
                 root=root, project=project, body=body, doc_type=doc_type,
+                current_name=entry.name, existing_tasks=existing_tasks,
             )
             patch: dict = {"description": meta.get("description", "")}
-            if collection == "tasks" and meta.get("task_group"):
-                patch["taskGroup"] = meta["task_group"]
+            if meta.get("name"):
+                patch["name"] = meta["name"]
+            if collection == "tasks":
+                if meta.get("task_group"):
+                    patch["taskGroup"] = meta["task_group"]
+                # Only keep dependsOn ids that point at real, non-self tasks.
+                known = {t["id"] for t in (existing_tasks or [])}
+                deps = [d for d in meta.get("depends_on", []) if d in known]
+                if deps:
+                    patch["dependsOn"] = deps
             self.storage.patch_metadata(root, project, collection, entry_id, patch)
             self.storage.clear_operation(root, project, collection, entry_id)
             self._publish(project, entry_id, collection, "generate", "completed")

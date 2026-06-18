@@ -562,9 +562,12 @@ class ClaudeService:
         project: str,
         body: str,
         doc_type: DocType | str,
+        current_name: str = "",
+        existing_tasks: list[dict] | None = None,
     ) -> dict:
-        """Derive metadata (description + taskGroup) for a verbatim-imported document.
-        Never touches the body. Falls back to a heuristic description if unparseable."""
+        """Derive metadata (name + description + taskGroup + dependsOn) for a
+        verbatim-imported document. Never touches the body. Falls back to a heuristic
+        description if unparseable."""
         type_val = doc_type.value if isinstance(doc_type, DocType) else doc_type
         rendered = self.prompts.render(
             "import_metadata",
@@ -573,14 +576,24 @@ class ClaudeService:
             repo_root=root,
             doc_type=type_val,
             body=body[:_BODY_BUDGET],
+            current_name=current_name,
+            existing_tasks=existing_tasks or [],
         )
         result = await self._invoke(rendered, **self._gen_cli_args(root, project))
         parsed = _parse_structured(result.text, require="description")
         if parsed is None:
-            return {"description": _derive_description(body), "task_group": ""}
+            return {
+                "name": current_name,
+                "description": _derive_description(body),
+                "task_group": "",
+                "depends_on": [],
+            }
+        deps = parsed.get("dependsOn") or []
         return {
+            "name": str(parsed.get("name", "")).strip(),
             "description": str(parsed.get("description", "")).strip(),
             "task_group": str(parsed.get("taskGroup", "")).strip(),
+            "depends_on": [str(d).strip() for d in deps if str(d).strip()],
         }
 
 

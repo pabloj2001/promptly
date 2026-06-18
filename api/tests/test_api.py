@@ -20,6 +20,15 @@ class FakeClaude:
                      depends_on=["Set up DB"]),
         ]
 
+    async def derive_import_metadata(self, *, root, project, body, doc_type,
+                                     current_name="", existing_tasks=None):
+        return {
+            "name": f"AI {current_name}",
+            "description": "auto import description",
+            "task_group": "Imported" if doc_type == "task" else "",
+            "depends_on": [t["id"] for t in (existing_tasks or [])][:1],
+        }
+
 
 class FakeOperations:
     """Runs 'background' work synchronously so tests are deterministic (no real CLI,
@@ -45,9 +54,17 @@ class FakeOperations:
         self.storage.clear_operation(root, project, collection, entry_id)
 
     def start_import_metadata(self, root, project, entry_id, collection, *, doc_type):
-        patch = {"description": "auto import description"}
+        entry = self.storage.get_entry(root, project, collection, entry_id)
+        patch = {"description": "auto import description", "name": f"AI {entry.name}"}
         if collection == "tasks":
             patch["taskGroup"] = "Imported"
+            others = [
+                t.id
+                for t in self.storage.read_metadata(root, project, "tasks").values()
+                if t.id != entry_id and t.status != "removed"
+            ]
+            if others:
+                patch["dependsOn"] = others[:1]
         self.storage.patch_metadata(root, project, collection, entry_id, patch)
         self.storage.clear_operation(root, project, collection, entry_id)
 
@@ -153,6 +170,24 @@ def test_import_task_fills_group(client, proj):
     got = client.get(f"/tasks/{entry['id']}", params=q(proj)).json()
     assert got["meta"]["description"] == "auto import description"
     assert got["meta"]["taskGroup"] == "Imported"
+
+
+def test_import_infers_name_and_dependencies(client, proj):
+    # First task: nothing to depend on, but still gets an AI-derived name.
+    # (FakeOperations runs the metadata pass synchronously, so the rename is
+    # already applied by the time we read it back.)
+    first = client.post("/docs/import", params=q(proj),
+                        json={"name": "First", "type": "task", "body": "# A"}).json()
+    got_first = client.get(f"/tasks/{first['id']}", params=q(proj)).json()["meta"]
+    assert got_first["name"] == "AI First"  # renamed by the metadata pass
+    assert got_first["dependsOn"] == []  # no other tasks → no deps
+
+    # Second task: should pick up a dependency on the existing one.
+    second = client.post("/docs/import", params=q(proj),
+                         json={"name": "Second", "type": "task", "body": "# B"}).json()
+    got_second = client.get(f"/tasks/{second['id']}", params=q(proj)).json()["meta"]
+    assert got_second["name"] == "AI Second"
+    assert got_second["dependsOn"] == [first["id"]]
 
 
 def test_import_doc_real_spawn(promptly_home, root):

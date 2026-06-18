@@ -70,7 +70,23 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
     <div className="space-y-3 text-sm">
       <div>
         <div className="text-xs uppercase tracking-wide text-slate-400">{entry.type}</div>
-        <div className="font-medium text-slate-900">{entry.name}</div>
+        <input
+          key={entry.id}
+          className="w-full rounded border border-transparent bg-transparent px-1 py-0.5 font-medium text-slate-900 hover:border-slate-200 focus:border-blue-500 focus:bg-white focus:outline-none"
+          defaultValue={entry.name}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Escape") {
+              (e.target as HTMLInputElement).value = entry.name;
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (v && v !== entry.name) savePatch({ name: v });
+            else e.target.value = entry.name;
+          }}
+        />
       </div>
 
       {entry.type === "task" && (
