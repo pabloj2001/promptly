@@ -587,6 +587,7 @@ class ClaudeService:
                 "description": _derive_description(body),
                 "task_group": "",
                 "depends_on": [],
+                "status": "",
             }
         deps = parsed.get("dependsOn") or []
         return {
@@ -594,6 +595,7 @@ class ClaudeService:
             "description": str(parsed.get("description", "")).strip(),
             "task_group": str(parsed.get("taskGroup", "")).strip(),
             "depends_on": [str(d).strip() for d in deps if str(d).strip()],
+            "status": str(parsed.get("status", "")).strip(),
         }
 
 

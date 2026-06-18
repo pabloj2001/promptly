@@ -19,6 +19,9 @@ Then, from the imported document below, produce:
   relationship is clear from the content (this task plainly builds on or requires another). If
   you're unsure, leave it out. Prefer an empty array over a guess. Never invent ids; only use
   ids from the list. Never depend on this same task.
+- `status`: one of "pending", "in_progress", "in_review", "blocked", "done". Be conservative —
+  use "pending" unless the document clearly states otherwise (e.g. it's marked done/completed,
+  in progress, or blocked). When in doubt, use "pending".
 {% if existing_tasks %}
 Existing tasks you may depend on:
 {% for t in existing_tasks -%}
@@ -30,11 +33,12 @@ Existing tasks you may depend on:
 {%- else -%}
 - `taskGroup`: leave as an empty string (only tasks are grouped).
 - `dependsOn`: leave as an empty array (only tasks have dependencies).
+- `status`: leave as an empty string (only tasks have a status).
 {%- endif %}
 
 Respond with ONLY a single JSON object — no code fences, no commentary before or after —
 in exactly this shape:
-{"name": "<title>", "description": "<one sentence>", "taskGroup": "<group or empty string>", "dependsOn": [<task ids or empty>]}
+{"name": "<title>", "description": "<one sentence>", "taskGroup": "<group or empty string>", "dependsOn": [<task ids or empty>], "status": "<status or empty string>"}
 
 <document>
 {{ body }}

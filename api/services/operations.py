@@ -15,6 +15,11 @@ from ..storage import StorageService
 from .claude import ClaudeService
 from .execution import SSEBus
 
+# Statuses an import may infer. "pending" (the default) and "removed" (the delete
+# state) are excluded so import only ever moves a task *off* the default when the
+# document clearly says so.
+_IMPORT_STATUSES = {"in_progress", "in_review", "blocked", "done"}
+
 
 class OperationManager:
     def __init__(self, storage: StorageService, claude: ClaudeService,
@@ -143,6 +148,10 @@ class OperationManager:
                 deps = [d for d in meta.get("depends_on", []) if d in known]
                 if deps:
                     patch["dependsOn"] = deps
+                # Conservative status: only apply a recognized, non-default value.
+                status = meta.get("status", "")
+                if status in _IMPORT_STATUSES:
+                    patch["status"] = status
             self.storage.patch_metadata(root, project, collection, entry_id, patch)
             self.storage.clear_operation(root, project, collection, entry_id)
             self._publish(project, entry_id, collection, "generate", "completed")

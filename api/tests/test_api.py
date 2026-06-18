@@ -22,11 +22,14 @@ class FakeClaude:
 
     async def derive_import_metadata(self, *, root, project, body, doc_type,
                                      current_name="", existing_tasks=None):
+        # Infer a status only when the body clearly says so (mimics the prompt).
+        status = "done" if "DONE" in body else ""
         return {
             "name": f"AI {current_name}",
             "description": "auto import description",
             "task_group": "Imported" if doc_type == "task" else "",
             "depends_on": [t["id"] for t in (existing_tasks or [])][:1],
+            "status": status,
         }
 
 
@@ -55,6 +58,7 @@ class FakeOperations:
 
     def start_import_metadata(self, root, project, entry_id, collection, *, doc_type):
         entry = self.storage.get_entry(root, project, collection, entry_id)
+        _, body, _ = self.storage.read_document(root, project, collection, entry_id)
         patch = {"description": "auto import description", "name": f"AI {entry.name}"}
         if collection == "tasks":
             patch["taskGroup"] = "Imported"
@@ -65,6 +69,8 @@ class FakeOperations:
             ]
             if others:
                 patch["dependsOn"] = others[:1]
+            if "DONE" in body:
+                patch["status"] = "done"
         self.storage.patch_metadata(root, project, collection, entry_id, patch)
         self.storage.clear_operation(root, project, collection, entry_id)
 
@@ -188,6 +194,21 @@ def test_import_infers_name_and_dependencies(client, proj):
     got_second = client.get(f"/tasks/{second['id']}", params=q(proj)).json()["meta"]
     assert got_second["name"] == "AI Second"
     assert got_second["dependsOn"] == [first["id"]]
+    # Status stays at the default unless the body clearly says otherwise.
+    assert got_first["status"] == "pending"
+
+
+def test_import_infers_status_when_stated(client, proj):
+    done = client.post("/docs/import", params=q(proj),
+                       json={"name": "Old", "type": "task",
+                             "body": "# Already DONE\nshipped last week"}).json()
+    meta = client.get(f"/tasks/{done['id']}", params=q(proj)).json()["meta"]
+    assert meta["status"] == "done"
+
+    pend = client.post("/docs/import", params=q(proj),
+                       json={"name": "New", "type": "task", "body": "# todo"}).json()
+    meta2 = client.get(f"/tasks/{pend['id']}", params=q(proj)).json()["meta"]
+    assert meta2["status"] == "pending"
 
 
 def test_import_doc_real_spawn(promptly_home, root):
