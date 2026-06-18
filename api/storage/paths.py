@@ -26,6 +26,13 @@ def project_spec_path(root: str, name: str) -> Path:
     return project_dir(root, name) / "project.md"
 
 
+def deleted_dir(root: str, name: str) -> Path:
+    """Holding area for soft-deleted entry bodies (same relative path under it).
+    Files live here while an entry is status=removed; restore moves them back,
+    permanent delete unlinks them."""
+    return project_dir(root, name) / ".deleted"
+
+
 def permissions_path(root: str, name: str) -> Path:
     return project_dir(root, name) / "permissions.json"
 

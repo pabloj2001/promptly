@@ -259,3 +259,21 @@ def delete_task(
     storage: StorageService = Depends(get_storage),
 ):
     return storage.remove_entry(ap.root, ap.name, COLLECTION, task_id)
+
+
+@router.post("/{task_id}/restore", response_model=MetadataEntry)
+def restore_task(
+    task_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+):
+    return storage.restore_entry(ap.root, ap.name, COLLECTION, task_id)
+
+
+@router.delete("/{task_id}/purge", status_code=204)
+def purge_task(
+    task_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+):
+    storage.purge_entry(ap.root, ap.name, COLLECTION, task_id)

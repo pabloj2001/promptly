@@ -51,7 +51,9 @@ export function Sidebar({
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`}
           />
         )}
-        <span className={`min-w-0 flex-1 truncate ${removed ? "italic text-slate-400" : ""}`}>
+        <span
+          className={`min-w-0 flex-1 truncate ${removed ? "italic text-slate-400 opacity-60" : ""}`}
+        >
           {entry.name}
         </span>
         {op?.status === "running" && <Spinner className="text-slate-400" />}
@@ -124,7 +126,7 @@ export function Sidebar({
             checked={showRemoved}
             onChange={(e) => setShowRemoved(e.target.checked)}
           />
-          Show removed
+          Show deleted
         </label>
       </div>
 

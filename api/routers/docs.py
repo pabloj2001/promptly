@@ -178,3 +178,21 @@ def delete_doc(
     storage: StorageService = Depends(get_storage),
 ):
     return storage.remove_entry(ap.root, ap.name, COLLECTION, doc_id)
+
+
+@router.post("/{doc_id}/restore", response_model=MetadataEntry)
+def restore_doc(
+    doc_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+):
+    return storage.restore_entry(ap.root, ap.name, COLLECTION, doc_id)
+
+
+@router.delete("/{doc_id}/purge", status_code=204)
+def purge_doc(
+    doc_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+):
+    storage.purge_entry(ap.root, ap.name, COLLECTION, doc_id)

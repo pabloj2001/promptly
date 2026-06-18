@@ -3,7 +3,9 @@ import { StatusSelect } from "../../components/StatusSelect";
 import {
   useDeleteEntry,
   usePatchMetadata,
+  usePurgeEntry,
   useRepos,
+  useRestoreEntry,
   useSetTaskStatus,
   useTasks,
 } from "../../lib/queries";
@@ -17,6 +19,8 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
   const patch = usePatchMetadata();
   const setStatus = useSetTaskStatus();
   const deleteEntry = useDeleteEntry();
+  const restoreEntry = useRestoreEntry();
+  const purgeEntry = usePurgeEntry();
   const { data: tasks } = useTasks();
   const { data: reposData } = useRepos();
   const repos = reposData?.repos ?? [];
@@ -37,15 +41,27 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
 
   const kindLabel = entry.type === "task" ? "task" : "document";
   const removed = entry.status === "removed";
+  const busy = deleteEntry.isPending || restoreEntry.isPending || purgeEntry.isPending;
   const handleDelete = () => {
     if (
       !window.confirm(
-        `Delete ${kindLabel} “${entry.name}”? It will be marked removed ` +
-          `(still visible under “Show removed”).`,
+        `Delete ${kindLabel} “${entry.name}”? It will be moved to the deleted ` +
+          `area (still visible under “Show deleted”).`,
       )
     )
       return;
     deleteEntry.mutate({ collection, id: entry.id });
+  };
+  const handleRestore = () => restoreEntry.mutate({ collection, id: entry.id });
+  const handlePurge = () => {
+    if (
+      !window.confirm(
+        `Permanently delete ${kindLabel} “${entry.name}”? This erases the file and ` +
+          `its metadata for good — it cannot be undone.`,
+      )
+    )
+      return;
+    purgeEntry.mutate({ collection, id: entry.id });
   };
 
   const custom = Object.entries(entry.custom ?? {});
@@ -204,14 +220,29 @@ export function EditableMetadata({ entry }: { entry: MetadataEntry }) {
         </div>
       </div>
 
-      <div className="border-t border-slate-200 pt-3">
+      <div className="flex items-center gap-3 border-t border-slate-200 pt-3">
         {removed ? (
-          <p className="text-xs text-slate-400">This {kindLabel} is removed.</p>
+          <>
+            <button
+              className="text-xs font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50"
+              onClick={handleRestore}
+              disabled={busy}
+            >
+              {restoreEntry.isPending ? "Restoring…" : `Restore ${kindLabel}`}
+            </button>
+            <button
+              className="text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
+              onClick={handlePurge}
+              disabled={busy}
+            >
+              {purgeEntry.isPending ? "Deleting…" : "Permanently delete"}
+            </button>
+          </>
         ) : (
           <button
             className="text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
             onClick={handleDelete}
-            disabled={deleteEntry.isPending}
+            disabled={busy}
           >
             {deleteEntry.isPending ? "Deleting…" : `Delete ${kindLabel}`}
           </button>

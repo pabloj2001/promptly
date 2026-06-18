@@ -151,23 +151,30 @@ export function useImportDoc() {
   });
 }
 
-export function useDeleteEntry() {
+function useEntryLifecycle(
+  fn: (collection: Collection, id: string) => Promise<unknown>,
+) {
   const qc = useQueryClient();
   const project = useProject();
   return useMutation({
     mutationFn: ({ collection, id }: { collection: Collection; id: string }) =>
-      api.deleteEntry(collection, id),
-    onSuccess: (_data, { collection }) => {
+      fn(collection, id),
+    onSuccess: (_data, { collection, id }) => {
       if (collection === "tasks") {
         qc.invalidateQueries({ queryKey: ["tasks", project] });
         qc.invalidateQueries({ queryKey: ["taskGraph", project] });
       } else {
         qc.invalidateQueries({ queryKey: ["docs", project] });
       }
+      qc.invalidateQueries({ queryKey: ["entry", project, collection, id] });
       qc.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 }
+
+export const useDeleteEntry = () => useEntryLifecycle(api.deleteEntry);
+export const useRestoreEntry = () => useEntryLifecycle(api.restoreEntry);
+export const usePurgeEntry = () => useEntryLifecycle(api.purgeEntry);
 
 export function useGenerateTasksFromSpec() {
   const qc = useQueryClient();

@@ -114,6 +114,56 @@ def test_set_status_and_soft_remove(storage, project):
     assert storage.get_entry(root, name, "tasks", t.id).status == "removed"
 
 
+def test_soft_remove_moves_body_to_deleted(storage, project):
+    from api.storage import paths
+
+    name, root = project
+    t = storage.create_entry(root, name, type=DocType.task, display_name="Doomed",
+                             body="# body")
+    live = paths.project_dir(root, name) / t.file
+    deleted = paths.deleted_dir(root, name) / t.file
+    assert live.exists() and not deleted.exists()
+
+    storage.remove_entry(root, name, "tasks", t.id)
+    assert not live.exists()
+    assert deleted.exists()
+    # The body is still readable while removed (resolved under .deleted/).
+    _, body, _ = storage.read_document(root, name, "tasks", t.id)
+    assert "# body" in body
+
+
+def test_restore_entry_moves_body_back_and_clears_status(storage, project):
+    from api.storage import paths
+
+    name, root = project
+    t = storage.create_entry(root, name, type=DocType.task, display_name="Back")
+    storage.remove_entry(root, name, "tasks", t.id)
+    restored = storage.restore_entry(root, name, "tasks", t.id)
+    assert restored.status == TaskStatus.pending.value
+    assert (paths.project_dir(root, name) / t.file).exists()
+    assert not (paths.deleted_dir(root, name) / t.file).exists()
+
+
+def test_purge_removes_file_and_metadata(storage, project):
+    from api.storage import paths
+
+    name, root = project
+    a = storage.create_entry(root, name, type=DocType.task, display_name="A")
+    b = storage.create_entry(root, name, type=DocType.task, display_name="B",
+                             depends_on=[a.id])
+    # Must be soft-deleted first.
+    with pytest.raises(StorageError):
+        storage.purge_entry(root, name, "tasks", a.id)
+
+    storage.remove_entry(root, name, "tasks", a.id)
+    storage.purge_entry(root, name, "tasks", a.id)
+    with pytest.raises(StorageError):
+        storage.get_entry(root, name, "tasks", a.id)
+    assert not (paths.deleted_dir(root, name) / a.file).exists()
+    # dependsOn reference stripped from B so nothing dangles.
+    assert storage.get_entry(root, name, "tasks", b.id).depends_on == []
+
+
 def test_get_missing_entry_raises(storage, project):
     name, root = project
     with pytest.raises(StorageError):

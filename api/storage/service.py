@@ -306,16 +306,72 @@ class StorageService:
         )
 
     def remove_entry(self, root: str, name: str, collection: str, entry_id: str) -> MetadataEntry:
-        """Soft-remove: set status=removed, keep the entry so references don't
-        dangle (01 §2, §5)."""
+        """Soft-remove: set status=removed and move the body file into the project's
+        `.deleted/` holding area (same relative path). Metadata is kept so references
+        don't dangle (01 §2, §5) and the entry can be restored or purged later."""
+        import shutil
+
+        entry = self.get_entry(root, name, collection, entry_id)
+        if entry.status != TaskStatus.removed.value:
+            src = self._body_abs(root, name, entry.file)
+            dst = paths.deleted_dir(root, name) / entry.file
+            if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
         return self.patch_metadata(
             root, name, collection, entry_id, {"status": TaskStatus.removed.value}
         )
+
+    def restore_entry(self, root: str, name: str, collection: str, entry_id: str) -> MetadataEntry:
+        """Undo a soft-remove: move the body back from `.deleted/` and clear the
+        removed status (tasks → pending, docs/spec → no status)."""
+        import shutil
+
+        entry = self.get_entry(root, name, collection, entry_id)
+        src = paths.deleted_dir(root, name) / entry.file
+        dst = self._body_abs(root, name, entry.file)
+        if src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+        new_status = (
+            TaskStatus.pending.value if entry.type == DocType.task.value else None
+        )
+        return self.patch_metadata(root, name, collection, entry_id, {"status": new_status})
+
+    def purge_entry(self, root: str, name: str, collection: str, entry_id: str) -> None:
+        """Permanently delete a soft-removed entry: unlink its `.deleted/` body (and
+        chat history) and drop the metadata entry, stripping it from other entries'
+        dependsOn so no references dangle."""
+        entries = self.read_metadata(root, name, collection)
+        if entry_id not in entries:
+            raise NotFoundError(f"{collection[:-1]} {entry_id} not found")
+        entry = entries[entry_id]
+        if entry.status != TaskStatus.removed.value:
+            raise ValidationError("entry must be deleted before it can be purged")
+
+        for p in (
+            paths.deleted_dir(root, name) / entry.file,
+            self._body_abs(root, name, entry.file),
+            paths.chat_path(root, name, collection, entry_id),
+        ):
+            p.unlink(missing_ok=True)
+
+        del entries[entry_id]
+        for e in entries.values():
+            if entry_id in e.depends_on:
+                e.depends_on = [d for d in e.depends_on if d != entry_id]
+        self._write_metadata(root, name, collection, entries)
 
     # ── Document bodies + in-file comments ─────────────────────────────────────
 
     def _body_abs(self, root: str, name: str, file: str) -> Path:
         return paths.project_dir(root, name) / file
+
+    def _body_path(self, root: str, name: str, entry: MetadataEntry) -> Path:
+        """Where the entry's body actually lives — `.deleted/` while removed."""
+        if entry.status == TaskStatus.removed.value:
+            return paths.deleted_dir(root, name) / entry.file
+        return self._body_abs(root, name, entry.file)
 
     def _write_body_file(
         self, root: str, name: str, file: str, body: str, comments: list[Comment]
@@ -331,7 +387,7 @@ class StorageService:
         self, root: str, name: str, collection: str, entry_id: str
     ) -> tuple[MetadataEntry, str, list[Comment]]:
         entry = self.get_entry(root, name, collection, entry_id)
-        path = self._body_abs(root, name, entry.file)
+        path = self._body_path(root, name, entry)
         raw = path.read_text(encoding="utf-8") if path.exists() else ""
         body, comments = comment_io.parse_document(raw)
         return entry, body, comments

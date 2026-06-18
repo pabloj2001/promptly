@@ -110,6 +110,13 @@ export const api = {
     }),
   deleteEntry: (collection: Collection, id: string) =>
     request<MetadataEntry>(`/${collection}/${id}`, { method: "DELETE", scoped: true }),
+  restoreEntry: (collection: Collection, id: string) =>
+    request<MetadataEntry>(`/${collection}/${id}/restore`, {
+      method: "POST",
+      scoped: true,
+    }),
+  purgeEntry: (collection: Collection, id: string) =>
+    request<void>(`/${collection}/${id}/purge`, { method: "DELETE", scoped: true }),
 
   // Tasks
   listTasks: () => request<MetadataEntry[]>("/tasks", { scoped: true }),
