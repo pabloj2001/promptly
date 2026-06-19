@@ -130,6 +130,15 @@ async def cancel(
     return await em.cancel(ap.root, ap.name, execution_id)
 
 
+@router.delete("/{execution_id}", status_code=204)
+async def delete_execution(
+    execution_id: str,
+    ap: ActiveProject = Depends(get_active_project),
+    em: ExecutionManager = Depends(get_execution),
+):
+    await em.delete_execution(ap.root, ap.name, execution_id)
+
+
 @router.get("/{execution_id}/diff")
 async def diff(
     execution_id: str,

@@ -430,6 +430,20 @@ export function useCancelExecution() {
   return useExecutionMutation(({ id }: { id: string }) => api.cancelExecution(id));
 }
 
+export function useDeleteExecution() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: ({ id }: { id: string; taskId: string }) => api.deleteExecution(id),
+    onSuccess: (_data, { id }) => {
+      qc.removeQueries({ queryKey: ["execution", project, id] });
+      qc.invalidateQueries({ queryKey: ["tasks", project] });
+      qc.invalidateQueries({ queryKey: ["taskGraph", project] });
+      qc.invalidateQueries({ queryKey: ["diff", project, id] });
+    },
+  });
+}
+
 export function useCreatePr() {
   const qc = useQueryClient();
   const project = useProject();

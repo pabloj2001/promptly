@@ -16,6 +16,11 @@ class StubClaude:
         from api.services.claude import GeneratedDoc
         return GeneratedDoc(name=name_hint or "Gen", description="d", body="# Gen\nbody")
 
+    async def infer_target_repo(self, *, root, project, body, repos):
+        # Prove inference is wired: pick the first non-primary repo when present.
+        nonprimary = [r for r in repos if not r.primary]
+        return nonprimary[0].id if nonprimary else repos[0].id
+
 
 @pytest.mark.asyncio
 async def test_stream_delivers_published_event(storage):
@@ -56,3 +61,28 @@ async def test_run_generation_finalizes_and_publishes(storage, project):
     _, body, _ = storage.read_document(root, name, "tasks", ph.id)
     assert "body" in body
     await agen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_run_generation_infers_repo_when_multi_repo(storage, project):
+    from api.models import ProjectRepo, ProjectRepos
+
+    name, root = project
+    storage.write_repos(root, name, ProjectRepos(repos=[
+        ProjectRepo(id="primary", name="main", primary=True),
+        ProjectRepo(id="", name="docs", url="https://example.com/docs.git"),
+    ]))
+    om = OperationManager(storage, StubClaude())
+    ph = storage.create_placeholder(root, name, type=DocType.task, provisional_name="T")
+
+    om.start_generation(root, name, ph.id, "tasks",
+                        prompt="x", type=DocType.task, depends_on=[], name_hint=None)
+    for _ in range(50):  # let the background task finish
+        await asyncio.sleep(0.01)
+        if storage.get_entry(root, name, "tasks", ph.id).operation is None:
+            break
+
+    entry = storage.get_entry(root, name, "tasks", ph.id)
+    repos = storage.read_repos(root, name).repos
+    nonprimary = next(r for r in repos if not r.primary)
+    assert entry.repo == nonprimary.id  # AI-inferred target repo applied

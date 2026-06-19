@@ -622,6 +622,29 @@ class ClaudeService:
             "status": str(parsed.get("status", "")).strip(),
         }
 
+    async def infer_target_repo(
+        self, *, root: str, project: str, body: str, repos: list,
+    ) -> str:
+        """Pick which project repo a task targets (10), given the task body and the repo
+        registry. Conservative: returns the primary repo's id when unsure/unparseable.
+        ``repos`` is a list of ProjectRepo."""
+        primary = next((r for r in repos if r.primary), None)
+        default = primary.id if primary else (repos[0].id if repos else "primary")
+        rendered = self.prompts.render(
+            "infer_repo",
+            project_name=project,
+            project_path=self._project_path(root, project),
+            repos=[{"id": r.id, "name": r.name, "url": r.url, "primary": r.primary}
+                   for r in repos],
+            body=body[:_BODY_BUDGET],
+        )
+        result = await self._invoke(rendered, **self._gen_cli_args(root, project))
+        parsed = _parse_structured(result.text, require="repo")
+        if not parsed:
+            return default
+        rid = str(parsed.get("repo", "")).strip()
+        return rid if any(r.id == rid for r in repos) else default
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────────
 

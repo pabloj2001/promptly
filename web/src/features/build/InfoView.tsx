@@ -5,7 +5,10 @@ import {
   useCancelExecution,
   useCreatePr,
   useDecidePermission,
+  useDeleteExecution,
   useExecution,
+  usePatchMetadata,
+  useRepos,
   useResumeExecution,
   useSendFeedback,
   useStartExecution,
@@ -122,14 +125,19 @@ export function InfoView({ task }: { task: MetadataEntry }) {
 
 function TaskMeta({ task }: { task: MetadataEntry }) {
   const { data: tasks } = useTasks();
+  const { data: reposData } = useRepos();
+  const patch = usePatchMetadata();
   const navigate = useNavigate();
   const project = useUiStore((s) => s.activeProject);
 
+  const repos = reposData?.repos ?? [];
   const deps = (task.dependsOn ?? []).map(
     (id) => tasks?.find((t) => t.id === id)?.name ?? id,
   );
   const custom = Object.entries(task.custom ?? {});
   const fmt = (s?: string) => (s ? new Date(s).toLocaleString() : "—");
+  const repoName =
+    repos.find((r) => r.id === (task.repo ?? "primary"))?.name ?? task.repo ?? "—";
 
   return (
     <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
@@ -154,6 +162,33 @@ function TaskMeta({ task }: { task: MetadataEntry }) {
 
       <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-sm">
         <Field label="Description">{task.description || "—"}</Field>
+        {repos.length > 1 && (
+          <Field label="Repository">
+            {task.executionId ? (
+              // Locked once an execution exists — the workspace is built for this repo.
+              <span title="Repository is fixed once a task has been executed">{repoName}</span>
+            ) : (
+              <select
+                className="rounded border border-slate-300 px-1.5 py-0.5 text-sm focus:border-blue-500 focus:outline-none"
+                value={task.repo ?? "primary"}
+                onChange={(e) =>
+                  patch.mutate({
+                    collection: "tasks",
+                    id: task.id,
+                    patch: { repo: e.target.value },
+                  })
+                }
+              >
+                {repos.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                    {r.primary ? " (primary)" : ""}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+        )}
         <Field label="Depends on">{deps.length ? deps.join(", ") : "None"}</Field>
         {custom.map(([k, v]) => (
           <Field key={k} label={k}>
@@ -209,10 +244,22 @@ function RunBody({
 }) {
   const cancel = useCancelExecution();
   const resume = useResumeExecution();
+  const del = useDeleteExecution();
   const running = progress.status === "running";
   const awaiting = progress.status === "awaiting_input";
   const completed = progress.status === "completed";
   const failed = progress.status === "failed";
+
+  const onDelete = () => {
+    if (
+      !window.confirm(
+        "Delete this execution? Its worktrees and run history are removed and the " +
+          "task is reset so you can start a fresh execution. Any open PR is left intact.",
+      )
+    )
+      return;
+    del.mutate({ id: executionId, taskId: task.id });
+  };
 
   const openQuestion = progress.pendingQuestions.find((q) => q.answer == null);
   const openPermissions = progress.pendingPermissions.filter((p) => p.decision == null);
@@ -264,6 +311,27 @@ function RunBody({
 
       {(completed || failed) && (
         <Review task={task} progress={progress} executionId={executionId} />
+      )}
+
+      {!running && (
+        <div className="flex items-center gap-3 border-t border-slate-100 pt-3">
+          {awaiting && (
+            <button
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              disabled={cancel.isPending}
+              onClick={() => cancel.mutate({ id: executionId })}
+            >
+              {cancel.isPending ? "Cancelling…" : "Cancel execution"}
+            </button>
+          )}
+          <button
+            className="rounded-md px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+            disabled={del.isPending}
+            onClick={onDelete}
+          >
+            {del.isPending ? "Deleting…" : "Delete execution"}
+          </button>
+        </div>
       )}
     </div>
   );

@@ -603,6 +603,39 @@ async def test_run_loop_failure(storage, root, tmp_path):
     assert "boom" in (prog.error or "")
 
 
+async def test_delete_execution_removes_worktree_and_unlinks_task(storage, root):
+    from api.storage import paths
+
+    _seed_repo(root)
+    storage.create_project("Demo", root)
+    task = storage.create_entry(root, "Demo", type="task", display_name="Del")
+    storage.create_execution(root, "Demo", "e9", task.id)
+    wt = str(paths.worktree_path(root, "Demo", "e9"))
+    worktree.add_worktree(root, wt, worktree.branch_name("del", "e9"))
+    storage.patch_metadata(root, "Demo", "tasks", task.id,
+                           {"executionId": "e9", "status": TaskStatus.in_review.value})
+    assert paths.execution_dir(root, "Demo", "e9").exists()
+
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    await em.delete_execution(root, "Demo", "e9")
+
+    assert not paths.execution_dir(root, "Demo", "e9").exists()
+    refreshed = storage.get_entry(root, "Demo", "tasks", task.id)
+    assert refreshed.execution_id is None
+    assert refreshed.status == TaskStatus.pending.value
+
+
+async def test_delete_execution_refuses_while_active(storage, root):
+    from api.storage import ConflictError
+
+    storage.create_project("Demo", root)
+    storage.create_execution(root, "Demo", "e10", "t10")
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    em._active.add("e10")  # pretend the run loop is live
+    with pytest.raises(ConflictError):
+        await em.delete_execution(root, "Demo", "e10")
+
+
 # ── resume control flow (no real subprocess) ─────────────────────────────────────
 
 

@@ -1,0 +1,21 @@
+{# vars: project_name, project_path, repos, body #}
+{% import "_shared.md.j2" as s -%}
+A task in the software project "{{ project_name }}" targets exactly ONE repository — the
+repo whose code the task will change. Choose which repo from the list below.
+
+{{ s.read_first(project_name, project_path) }}
+
+Repositories:
+{% for r in repos -%}
+- `{{ r.id }}` — {{ r.name }}{% if r.primary %} (primary){% endif %}{% if r.url %} [{{ r.url }}]{% endif %}
+{% endfor %}
+
+Be conservative: if the task isn't clearly about a specific non-primary repo, choose the
+primary repo. Prefer the primary repo when unsure.
+
+Respond with ONLY a single JSON object — no code fences, no commentary — in this shape:
+{"repo": "<repo id from the list>"}
+
+<task>
+{{ body }}
+</task>

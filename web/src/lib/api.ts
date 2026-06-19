@@ -266,6 +266,8 @@ export const api = {
     }),
   cancelExecution: (id: string) =>
     request<ProgressState>(`/executions/${id}/cancel`, { method: "POST", scoped: true }),
+  deleteExecution: (id: string) =>
+    request<void>(`/executions/${id}`, { method: "DELETE", scoped: true }),
   createPr: (id: string) =>
     request<RelatedPR>(`/executions/${id}/pr`, { method: "POST", scoped: true }),
   getDiff: (id: string) => request<DiffResponse>(`/executions/${id}/diff`, { scoped: true }),

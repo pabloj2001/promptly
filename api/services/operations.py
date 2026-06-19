@@ -72,10 +72,22 @@ class OperationManager:
                 root, project, entry_id,
                 body=gen.body, display_name=gen.name, description=gen.description,
             )
+            if collection == "tasks":
+                await self._infer_repo(root, project, entry_id, gen.body)
             self._publish(project, entry_id, collection, "generate", "completed")
         except Exception as e:  # noqa: BLE001 - surface to UI, don't crash the loop
             self.storage.fail_operation(root, project, collection, entry_id, str(e))
             self._publish(project, entry_id, collection, "generate", "failed", str(e))
+
+    async def _infer_repo(self, root: str, project: str, entry_id: str, body: str) -> None:
+        """When a project has more than one repo (10), let the AI pick which one this
+        task targets and patch it. Single-repo projects keep the default (primary)."""
+        repos = self.storage.read_repos(root, project).repos
+        if len(repos) <= 1:
+            return
+        repo_id = await self.claude.infer_target_repo(
+            root=root, project=project, body=body, repos=repos)
+        self.storage.patch_metadata(root, project, "tasks", entry_id, {"repo": repo_id})
 
     # ── chat ──────────────────────────────────────────────────────────────────────
 
@@ -153,6 +165,8 @@ class OperationManager:
                 if status in _IMPORT_STATUSES:
                     patch["status"] = status
             self.storage.patch_metadata(root, project, collection, entry_id, patch)
+            if collection == "tasks":
+                await self._infer_repo(root, project, entry_id, body)
             self.storage.clear_operation(root, project, collection, entry_id)
             self._publish(project, entry_id, collection, "generate", "completed")
         except Exception as e:  # noqa: BLE001

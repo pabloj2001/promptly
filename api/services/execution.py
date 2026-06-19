@@ -23,7 +23,7 @@ from typing import AsyncIterator, Optional
 from collections import defaultdict
 
 from ..models import ProgressState, ProgressStatus, RelatedPR, TaskStatus
-from ..storage import StorageService, NotFoundError
+from ..storage import StorageService, NotFoundError, ConflictError
 from ..storage import paths
 from . import worktree
 from .claude import ClaudeService
@@ -883,6 +883,35 @@ class ExecutionManager:
             self.publish_progress(execution_id, "status", state)
             return state
         return self.storage.read_progress(root, project, execution_id)
+
+    async def delete_execution(self, root: str, project: str, execution_id: str) -> None:
+        """Tear down an execution that is no longer running (07/10): remove its
+        worktrees + workspace + metadata, and unlink it from its task (resetting the
+        task to pending so it can be started fresh). Refuses while the run is live —
+        cancel it first."""
+        if execution_id in self._active:
+            raise ConflictError("execution is still running; cancel it first")
+        prog = self.storage.read_progress(root, project, execution_id)
+        if prog is None:
+            raise NotFoundError(f"execution {execution_id} not found")
+
+        # Deregister linked worktrees, then delete the whole execution directory.
+        worktree.remove_workspace(
+            root, str(paths.workspace_path(root, project, execution_id)))
+        worktree.remove_workspace(
+            root, str(paths.worktree_path(root, project, execution_id)))
+        import shutil
+        shutil.rmtree(paths.execution_dir(root, project, execution_id), ignore_errors=True)
+
+        try:
+            task = self.storage.get_entry(root, project, "tasks", prog.task_id)
+            if task.execution_id == execution_id:
+                self.storage.patch_metadata(
+                    root, project, "tasks", prog.task_id,
+                    {"executionId": None, "status": TaskStatus.pending.value,
+                     "executionError": False, "executionBlocked": False})
+        except NotFoundError:
+            pass
 
     # ── PR + diff ────────────────────────────────────────────────────────────────
 
