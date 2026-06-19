@@ -103,13 +103,18 @@ async def test_derive_import_metadata_parses(svc, project, monkeypatch):
 
     async def fake_invoke(prompt, **kw):
         assert kw["cwd"] == root  # generation profile (repo-root reads)
-        return GenResult(text='{"description":"A login task","taskGroup":"Backend"}')
+        return GenResult(text='{"name":"Auth","description":"A login task",'
+                              '"taskGroup":"Backend","dependsOn":["t1"],"status":"done"}')
 
     monkeypatch.setattr(svc, "_invoke", fake_invoke)
     meta = await svc.derive_import_metadata(
         root=root, project=name, body="# Auth\nstuff", doc_type=DocType.task,
+        existing_tasks=[{"id": "t1", "name": "Setup", "description": ""}],
     )
-    assert meta == {"description": "A login task", "task_group": "Backend"}
+    assert meta == {
+        "name": "Auth", "description": "A login task", "task_group": "Backend",
+        "depends_on": ["t1"], "status": "done",
+    }
 
 
 @pytest.mark.asyncio
@@ -149,6 +154,56 @@ async def test_plan_execution_steps_structured(svc, project, monkeypatch):
     assert [s.title for s in stubs] == ["Research", "Implement"]
     assert stubs[0].detail == "look at X"
     assert seen  # activity events were forwarded
+
+
+@pytest.mark.asyncio
+async def test_invoke_structured_handles_oversized_line(svc, project, monkeypatch):
+    """A single stream-json line larger than asyncio's default readline cap (64 KiB)
+    must not crash the planning call (regression: 'Separator is not found, chunk
+    exceeded the limit' surfaced as 'planning failed'). The drain reads fixed-size
+    chunks and splits on newlines itself, so line length is unbounded."""
+    import json
+
+    name, root = project
+    big = json.dumps({"type": "assistant", "session_id": "s",
+                      "message": {"content": [{"type": "text", "text": "A" * 200000}]}})
+    done = json.dumps({"type": "result", "session_id": "s",
+                       "structured_output": {"steps": [{"title": "Do it"}]}})
+    payload = (big + "\n" + done + "\n").encode()
+
+    class FakeStdout:
+        def __init__(self, data: bytes):
+            self._data = data
+        async def read(self, n: int = -1) -> bytes:
+            if not self._data:
+                return b""
+            chunk, self._data = self._data[:n], self._data[n:]
+            return chunk
+
+    class FakeStderr:
+        async def read(self, n: int = -1) -> bytes:
+            return b""
+
+    class FakeProc:
+        returncode = 0
+        stdout = FakeStdout(payload)
+        stderr = FakeStderr()
+        async def wait(self):
+            return 0
+        def kill(self):
+            pass
+
+    async def fake_exec(*args, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr("api.services.claude.asyncio.create_subprocess_exec", fake_exec)
+    seen = []
+    result = await svc._invoke_structured(
+        "prompt", schema={"required": ["steps"]}, cwd=root,
+        on_event=lambda e: seen.append(e["type"]),
+    )
+    assert result["structured_output"] == {"steps": [{"title": "Do it"}]}
+    assert "assistant" in seen  # the giant line streamed without crashing
 
 
 @pytest.mark.asyncio

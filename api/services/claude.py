@@ -35,6 +35,11 @@ from .prompts import PromptLibrary
 # Rough character budget for any inline content we still pass (e.g. a doc body in chat).
 _BODY_BUDGET = 200_000
 
+# StreamReader flow-control buffer for stream-json subprocesses. We split lines
+# ourselves (chunked read), so this only needs to exceed any single chunk; it
+# guards against asyncio's readline() length cap on very large stream-json lines.
+_STREAM_LIMIT = 16 * 1024 * 1024  # 16 MiB
+
 # Promptly's own app root (the dir containing the ``api`` package) — used as
 # PYTHONPATH so the CLI's child helpers (the PreToolUse hook) can import ``api.*``.
 _APP_ROOT = Path(__file__).resolve().parents[2]
@@ -197,27 +202,46 @@ class ClaudeService:
         proc = await asyncio.create_subprocess_exec(
             *args, cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            limit=_STREAM_LIMIT,
         )
         structured: Optional[dict] = None
         stderr_buf: list[bytes] = []
 
         async def drain_stdout() -> None:
+            # Read raw chunks and split on newlines ourselves: a single stream-json
+            # line can carry a large tool result / file content and blow past asyncio's
+            # readline() length cap ("Separator is not found, and chunk exceeded the
+            # limit"). Chunked read(n) has no such cap, so lines can be any size.
             assert proc.stdout is not None
             nonlocal structured
-            async for raw in proc.stdout:
+            buf = bytearray()
+
+            def flush(raw: bytes) -> None:
+                nonlocal structured
                 line = raw.decode(errors="replace").strip()
                 if not line:
-                    continue
+                    return
                 try:
                     evt = json.loads(line)
                 except json.JSONDecodeError:
-                    continue
+                    return
                 if on_event:
                     on_event(evt)
                 if evt.get("type") == "result" and isinstance(
                     evt.get("structured_output"), dict
                 ):
                     structured = evt["structured_output"]
+
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                while (nl := buf.find(b"\n")) >= 0:
+                    flush(bytes(buf[:nl]))
+                    del buf[: nl + 1]
+            if buf:
+                flush(bytes(buf))
 
         async def drain_stderr() -> None:
             assert proc.stderr is not None
