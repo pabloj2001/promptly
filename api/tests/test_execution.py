@@ -676,7 +676,7 @@ async def test_resume_continues_with_session(storage, root, monkeypatch):
     monkeypatch.setattr(em, "_run", fake_run)
     monkeypatch.setattr(em, "_sync_for_resume", lambda *a: "")
     monkeypatch.setattr("api.services.execution.read_transcript_command", lambda sid: None)
-    await em.resume(root, "Demo", "e8")
+    state = await em.resume(root, "Demo", "e8")
     import asyncio
     await asyncio.sleep(0)
 
@@ -684,6 +684,8 @@ async def test_resume_continues_with_session(storage, root, monkeypatch):
     assert "continue" in calls["prompt"].lower()
     # the task error flag is cleared on resume
     assert storage.get_entry(root, "Demo", "tasks", task.id).execution_error is False
+    # resume returns the running state immediately (no lingering failed banner)
+    assert state.status == ProgressStatus.running.value and state.error is None
 
 
 async def test_resume_pauses_on_transcript_question(storage, root, monkeypatch):

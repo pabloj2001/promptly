@@ -828,10 +828,17 @@ class ExecutionManager:
             deps = [self.storage.get_entry(root, project, "tasks", d).name
                     for d in task.depends_on
                     if (self.storage.read_metadata(root, project, "tasks").get(d))]
+            # Flip to running (clearing the error) and publish before spawning so the
+            # UI drops the error banner / Try-again immediately and shows progress.
+            self.storage.set_execution_status(
+                root, project, execution_id, ProgressStatus.running)
+            state = self.storage.set_activity(
+                root, project, execution_id, "Planning the task…")
+            self.publish_progress(execution_id, "status", state)
             self._spawn_tracked(execution_id, self._plan_then_run(
                 root, project, execution_id, prog.task_id,
                 task.name, task.file, deps))
-            return self.storage.read_progress(root, project, execution_id)
+            return state
 
         # Reconcile: if the last recorded command was a question/issue, pause instead.
         cmd = read_transcript_command(prog.session_id)
@@ -855,10 +862,17 @@ class ExecutionManager:
             "building the task from where you left off; return one command when you "
             "finish a step, hit a blocker, or are done."
         )
+        # Flip to running (clearing the error) and publish before spawning so the UI
+        # drops the error banner / Try-again immediately and shows progress.
+        self.storage.set_execution_status(
+            root, project, execution_id, ProgressStatus.running)
+        state = self.storage.set_activity(
+            root, project, execution_id, "Resuming…")
+        self.publish_progress(execution_id, "status", state)
         self._spawn_tracked(execution_id, self._run(
             root, project, execution_id, prog.task_id,
             prompt, session_id=prog.session_id))
-        return self.storage.read_progress(root, project, execution_id)
+        return state
 
     async def cancel(self, root: str, project: str, execution_id: str) -> ProgressState:
         self.stop(execution_id, "cancel")
