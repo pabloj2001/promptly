@@ -1,18 +1,24 @@
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Modal } from "../../components/Modal";
 import { Spinner } from "../../components/Spinner";
-import { api, type Collection } from "../../lib/api";
+import { type Collection } from "../../lib/api";
 import {
   useAddComment,
+  useAddressComments,
+  useAnswerQuestion,
   useEntry,
+  useExecution,
+  useFollowupExecution,
+  useResumeExecution,
   useSaveEntry,
   useUpdateComment,
 } from "../../lib/queries";
+import { useExecutionStream } from "../../lib/sse";
 import type { Comment, MetadataEntry } from "../../lib/types";
 import { collectionForType } from "./util";
 import { ChatPanel } from "./ChatPanel";
+import { DocDiff } from "./DocDiff";
 import { LiveEditor } from "./LiveEditor";
 
 export function DocView({ entry }: { entry: MetadataEntry }) {
@@ -29,9 +35,12 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
   const [sel, setSel] = useState<{ start: number; end: number } | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
 
-  const [addressing, setAddressing] = useState(false);
-  const [preview, setPreview] = useState<{ body: string; ids: string[] } | null>(null);
-  const [addressError, setAddressError] = useState<string | null>(null);
+  // The entry's authoring execution (unified executions) drives the in-progress /
+  // error / question UI, and the per-doc diff + follow-up after it completes.
+  const authId = data?.meta.authoringExecutionId ?? null;
+  useExecutionStream(authId);
+  const { data: progress } = useExecution(authId);
+  const address = useAddressComments();
 
   useEffect(() => {
     setDraft(data?.body ?? "");
@@ -47,8 +56,7 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
     );
   }
 
-  const op = data.meta.operation;
-  const busy = op?.status === "running";
+  const busy = progress?.status === "running" || progress?.status === "awaiting_input";
   const isBlankNew = busy && !data.body.trim();
 
   // Brand-new doc still generating → blank loading state.
@@ -97,57 +105,31 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
     }
   };
 
-  const runAddress = async () => {
-    setAddressing(true);
-    setAddressError(null);
-    try {
-      const res = await api.address(collection, entry.id);
-      setPreview({ body: res.revisedBody, ids: res.addressedCommentIds });
-    } catch (e) {
-      setAddressError(e instanceof Error ? e.message : "Address failed");
-    } finally {
-      setAddressing(false);
-    }
-  };
-
-  const acceptAddress = async () => {
-    if (!preview) return;
-    await save.mutateAsync({ collection, id: entry.id, body: preview.body });
-    for (const id of preview.ids) {
-      await updateComment.mutateAsync({
-        collection, id: entry.id, commentId: id, patch: { resolved: true },
-      });
-    }
-    setPreview(null);
-  };
-
   return (
     <div className="flex h-full min-h-0">
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Toolbar */}
         <div className="flex items-center justify-end gap-2 border-b border-slate-200 px-4 py-2">
-          {addressError && <span className="text-xs text-red-600">{addressError}</span>}
+          {address.isError && (
+            <span className="text-xs text-red-600">{(address.error as Error).message}</span>
+          )}
           <button
             className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-2.5 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
-            onClick={runAddress}
-            disabled={addressing || busy || unresolved.length === 0}
+            onClick={() => address.mutate({ collection, id: entry.id })}
+            disabled={address.isPending || busy || unresolved.length === 0}
           >
-            {addressing && <Spinner />}
+            {address.isPending && <Spinner />}
             Address comments with AI
           </button>
         </div>
 
-        {/* In-progress banner for an existing doc being edited */}
-        {busy && (
-          <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
-            <Spinner className="text-amber-600" />
-            Changes in progress — editing is disabled until this finishes.
-          </div>
-        )}
-        {op?.status === "failed" && (
-          <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
-            Last operation failed{op.error ? `: ${op.error}` : ""}.
-          </div>
+        {/* Authoring execution state (in-progress / awaiting / error / latest diff) */}
+        {progress && authId && (
+          <AuthoringBanner
+            progress={progress}
+            executionId={authId}
+            entryName={data.meta.name}
+          />
         )}
 
         {/* Body */}
@@ -276,34 +258,126 @@ export function DocView({ entry }: { entry: MetadataEntry }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
 
-      {/* Address preview */}
-      <Modal
-        open={preview !== null}
-        onOpenChange={(o) => !o && setPreview(null)}
-        title="Proposed revision"
-        description="The AI revised this document to address the comments. Accept to apply."
-      >
-        <div className="max-h-[50vh] overflow-auto rounded border border-slate-200 bg-slate-50 p-3">
-          <article className="prose prose-slate prose-sm max-w-none prose-pre:border prose-pre:border-slate-200 prose-pre:bg-slate-100 prose-pre:text-slate-800">
-            <Markdown remarkPlugins={[remarkGfm]}>{preview?.body ?? ""}</Markdown>
-          </article>
+// In-progress / awaiting-input / error / completed-with-diff banner for a doc's
+// authoring execution. Lives inline in the Design tab (unified executions).
+function AuthoringBanner({
+  progress,
+  executionId,
+  entryName,
+}: {
+  progress: import("../../lib/types").ProgressState;
+  executionId: string;
+  entryName: string;
+}) {
+  const resume = useResumeExecution();
+  const answer = useAnswerQuestion();
+  const followup = useFollowupExecution();
+  const [reply, setReply] = useState("");
+  const [followUp, setFollowUp] = useState("");
+  const [showDiff, setShowDiff] = useState(false);
+
+  const openQuestion = progress.pendingQuestions.find((q) => q.answer == null);
+
+  if (progress.status === "running") {
+    return (
+      <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+        <div className="flex items-center gap-2">
+          <Spinner className="text-amber-600" />
+          <span className="font-medium">{entryName}</span> — working… editing is disabled.
         </div>
-        <div className="mt-3 flex justify-end gap-2">
+        {progress.activity && (
+          <div className="mt-0.5 truncate text-xs text-amber-700/80">{progress.activity}</div>
+        )}
+      </div>
+    );
+  }
+
+  if (progress.status === "awaiting_input" && openQuestion) {
+    return (
+      <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <div className="mb-1 font-semibold">Claude has a question</div>
+        <p className="mb-2 whitespace-pre-wrap">{openQuestion.question}</p>
+        <textarea
+          className="w-full rounded border border-amber-300 p-1.5 text-sm"
+          rows={2}
+          value={reply}
+          onChange={(e) => setReply(e.target.value)}
+          placeholder="Type your answer…"
+        />
+        <div className="mt-1 flex justify-end">
           <button
-            className="rounded-md px-3 py-2 text-sm text-slate-600 hover:bg-slate-100"
-            onClick={() => setPreview(null)}
+            className="rounded bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+            disabled={!reply.trim() || answer.isPending}
+            onClick={() => {
+              answer.mutate({ id: executionId, questionId: openQuestion.id, answer: reply.trim() });
+              setReply("");
+            }}
           >
-            Reject
-          </button>
-          <button
-            className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-            onClick={acceptAddress}
-          >
-            Accept
+            {answer.isPending ? "Sending…" : "Send answer"}
           </button>
         </div>
-      </Modal>
+      </div>
+    );
+  }
+
+  if (progress.status === "failed") {
+    return (
+      <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+        <span className="font-medium">Authoring failed</span>
+        {progress.error ? `: ${progress.error}` : "."}{" "}
+        <button
+          className="ml-1 rounded bg-red-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+          disabled={resume.isPending}
+          onClick={() => resume.mutate(executionId)}
+        >
+          {resume.isPending ? "Retrying…" : "Try again"}
+        </button>
+      </div>
+    );
+  }
+
+  // completed: offer the per-doc diff + a follow-up.
+  return (
+    <div className="border-b border-slate-200 bg-slate-50 px-4 py-2 text-sm text-slate-600">
+      <div className="flex items-center gap-3">
+        <button
+          className="text-xs font-medium text-blue-700 hover:underline"
+          onClick={() => setShowDiff((s) => !s)}
+        >
+          {showDiff ? "Hide changes" : "View changes"}
+        </button>
+        <input
+          className="flex-1 rounded border border-slate-300 px-2 py-1 text-sm"
+          value={followUp}
+          onChange={(e) => setFollowUp(e.target.value)}
+          placeholder="Follow up — ask for more changes…"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && followUp.trim()) {
+              followup.mutate({ id: executionId, message: followUp.trim() });
+              setFollowUp("");
+            }
+          }}
+        />
+        <button
+          className="rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          disabled={!followUp.trim() || followup.isPending}
+          onClick={() => {
+            followup.mutate({ id: executionId, message: followUp.trim() });
+            setFollowUp("");
+          }}
+        >
+          {followup.isPending ? "…" : "Follow up"}
+        </button>
+      </div>
+      {showDiff && (
+        <div className="mt-2">
+          <DocDiff executionId={executionId} />
+        </div>
+      )}
     </div>
   );
 }

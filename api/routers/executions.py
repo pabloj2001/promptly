@@ -44,6 +44,21 @@ async def start_execution(
     return await em.start(ap.root, ap.name, req.task_id)
 
 
+@router.get("", response_model=list[ProgressState])
+def list_executions(
+    ap: ActiveProject = Depends(get_active_project),
+    storage: StorageService = Depends(get_storage),
+):
+    """All executions for the project (unified) — the Build tab buckets these into
+    ongoing / in review / done, including doc-authoring executions."""
+    out = []
+    for eid in storage.list_executions(ap.root, ap.name):
+        prog = storage.read_progress(ap.root, ap.name, eid)
+        if prog is not None:
+            out.append(prog)
+    return out
+
+
 @router.get("/{execution_id}", response_model=ProgressState)
 def get_progress(
     execution_id: str,

@@ -2,8 +2,12 @@ import { useState } from "react";
 import { PromptDialog, type PromptResult } from "../../components/PromptDialog";
 import { Spinner } from "../../components/Spinner";
 import { GenerateTasksButton } from "../../components/GenerateTasksButton";
-import { useCreateTask, useTasks, useTaskGraph } from "../../lib/queries";
-import { useOperationsStream } from "../../lib/sse";
+import {
+  useCreateTask,
+  useExecutionsLive,
+  useTasks,
+  useTaskGraph,
+} from "../../lib/queries";
 import { useUiStore } from "../../store";
 import { GraphView } from "./GraphView";
 import { BoardView } from "./BoardView";
@@ -21,7 +25,7 @@ export function PlanTab() {
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useOperationsStream(); // live updates as generated tasks finalize
+  useExecutionsLive(); // live updates as generated task specs finalize
 
   const visibleTasks = (tasks ?? []).filter((t) => t.status !== "removed");
 

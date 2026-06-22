@@ -459,3 +459,14 @@ def test_get_progress_after_create(client, proj, storage, root):
     r = client.get("/executions/exec-10", params=q(proj))
     assert r.status_code == 200
     assert r.json()["status"] == "running"
+
+
+def test_list_executions(client, proj, storage, root):
+    storage.create_execution(root, "Demo", "exec-a", "task-a")
+    storage.create_execution(root, "Demo", "exec-b", "doc-b", kind="doc",
+                             collection="docs")
+    r = client.get("/executions", params=q(proj))
+    assert r.status_code == 200
+    by_id = {e["executionId"]: e for e in r.json()}
+    assert by_id["exec-a"]["kind"] == "task"
+    assert by_id["exec-b"]["kind"] == "doc" and by_id["exec-b"]["collection"] == "docs"

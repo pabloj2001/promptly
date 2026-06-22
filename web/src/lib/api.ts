@@ -3,7 +3,6 @@
 
 import { getActiveProject } from "../store";
 import type {
-  AddressResponse,
   ChatHistory,
   ChatMessage,
   Comment,
@@ -220,8 +219,10 @@ export const api = {
       scoped: true,
       body: config,
     }),
+  // Starts an authoring execution (comment mode) that revises the entry to address its
+  // unresolved comments; progress + diff stream over the returned execution.
   address: (collection: Collection, id: string) =>
-    request<AddressResponse>(`/${collection}/${id}/address`, {
+    request<ProgressState>(`/${collection}/${id}/address`, {
       method: "POST",
       scoped: true,
     }),
@@ -233,8 +234,15 @@ export const api = {
     }),
 
   // Executions
+  listExecutions: () => request<ProgressState[]>("/executions", { scoped: true }),
   getProgress: (id: string) =>
     request<ProgressState>(`/executions/${id}`, { scoped: true }),
+  followupExecution: (id: string, message: string) =>
+    request<ProgressState>(`/executions/${id}/followup`, {
+      method: "POST",
+      scoped: true,
+      body: { message },
+    }),
   resumeExecution: (id: string) =>
     request<ProgressState>(`/executions/${id}/resume`, {
       method: "POST",

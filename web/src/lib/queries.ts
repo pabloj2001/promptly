@@ -1,6 +1,7 @@
 // React Query hooks (04). Query keys include the active project so switching
 // projects naturally refetches.
 
+import { useEffect } from "react";
 import {
   useMutation,
   useQuery,
@@ -365,6 +366,76 @@ export function useExecution(executionId: string | null) {
     queryKey: ["execution", project, executionId],
     queryFn: () => api.getProgress(executionId!),
     enabled: !!project && !!executionId,
+  });
+}
+
+// All executions for the project (Build tab buckets them). Polls while any run is
+// ongoing so doc executions started from the Design tab surface here live.
+export function useExecutions() {
+  const project = useProject();
+  return useQuery({
+    queryKey: ["executions", project],
+    queryFn: api.listExecutions,
+    enabled: !!project,
+    refetchInterval: (query) => {
+      const data = query.state.data as import("./types").ProgressState[] | undefined;
+      const ongoing = (data ?? []).some(
+        (e) => e.status === "running" || e.status === "awaiting_input",
+      );
+      return ongoing ? 3000 : false;
+    },
+  });
+}
+
+// useExecutions + auto-refresh of the doc/task lists when any execution's status
+// changes (a finished authoring run finalizes a body/name/status). Used by the
+// Design and Plan tabs so generated/edited entries update live without per-entry
+// streams. The signature dependency means lists only refetch on real changes.
+export function useExecutionsLive() {
+  const q = useExecutions();
+  const qc = useQueryClient();
+  const project = useProject();
+  const sig = (q.data ?? []).map((e) => `${e.executionId}:${e.status}`).join(",");
+  useEffect(() => {
+    if (!project) return;
+    qc.invalidateQueries({ queryKey: ["tasks", project] });
+    qc.invalidateQueries({ queryKey: ["taskGraph", project] });
+    qc.invalidateQueries({ queryKey: ["docs", project] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig, project]);
+  return q;
+}
+
+// Reopen a completed doc-authoring execution with a follow-up instruction.
+export function useFollowupExecution() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: ({ id, message }: { id: string; message: string }) =>
+      api.followupExecution(id, message),
+    onSuccess: (state) => {
+      qc.setQueryData(["execution", project, state.executionId], state);
+      qc.invalidateQueries({ queryKey: ["docs", project] });
+      qc.invalidateQueries({ queryKey: ["tasks", project] });
+      qc.invalidateQueries({ queryKey: ["executions", project] });
+    },
+  });
+}
+
+// Start an authoring execution (comment mode) that revises the entry to address its
+// unresolved comments directly.
+export function useAddressComments() {
+  const qc = useQueryClient();
+  const project = useProject();
+  return useMutation({
+    mutationFn: ({ collection, id }: { collection: Collection; id: string }) =>
+      api.address(collection, id),
+    onSuccess: (state, v) => {
+      qc.setQueryData(["execution", project, state.executionId], state);
+      qc.invalidateQueries({ queryKey: ["entry", project, v.collection, v.id] });
+      qc.invalidateQueries({ queryKey: [v.collection, project] });
+      qc.invalidateQueries({ queryKey: ["executions", project] });
+    },
   });
 }
 

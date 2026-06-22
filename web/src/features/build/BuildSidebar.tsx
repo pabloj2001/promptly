@@ -1,13 +1,22 @@
 import { useState } from "react";
-import { useStartExecution, useTasks } from "../../lib/queries";
+import { useNavigate } from "react-router-dom";
+import {
+  useDocs,
+  useExecutions,
+  useStartExecution,
+  useTasks,
+} from "../../lib/queries";
+import { useUiStore } from "../../store";
 import { STATUS_META } from "../../lib/status";
 import { Spinner } from "../../components/Spinner";
-import type { MetadataEntry } from "../../lib/types";
+import type { MetadataEntry, ProgressState } from "../../lib/types";
 
-// Build sidebar: only tasks relevant to building are shown, in dependency order —
-//   1. Executing  — tasks with an active (not-yet-in-review) execution
-//   2. In review  — tasks whose build finished and await review
-//   3. Up next    — unstarted tasks whose dependencies are all done (ready to build)
+// Build sidebar: all executions, in dependency order —
+//   1. Ongoing    — task builds in progress + doc-authoring executions running/awaiting
+//   2. In review  — task builds finished, awaiting review (tasks only)
+//   3. Up next    — unstarted tasks whose dependencies are all done (tasks only)
+//   4. Done       — finished task builds + completed doc executions (collapsed, bottom)
+// Doc-authoring executions open in the Design tab (their full UI lives there).
 export function BuildSidebar({
   selectedId,
   onSelect,
@@ -16,15 +25,23 @@ export function BuildSidebar({
   onSelect: (id: string) => void;
 }) {
   const { data: tasks } = useTasks();
+  const { data: docs } = useDocs();
+  const { data: executions } = useExecutions();
+  const navigate = useNavigate();
+  const project = useUiStore((s) => s.activeProject);
   const start = useStartExecution();
+
   const all = (tasks ?? []).filter((t) => t.status !== "removed");
   const byId = new Map(all.map((t) => [t.id, t]));
+  const nameById = new Map<string, MetadataEntry>(
+    [...(docs ?? []), ...(tasks ?? [])].map((e) => [e.id, e]),
+  );
 
   const executing = all.filter(
     (t) => t.executionId && t.status !== "in_review" && t.status !== "done",
   );
   const inReview = all.filter((t) => t.status === "in_review");
-  // "Up next": not started yet, and every dependency is already done.
+  const doneTasks = all.filter((t) => t.status === "done");
   const upNext = all.filter(
     (t) =>
       !t.executionId &&
@@ -32,26 +49,39 @@ export function BuildSidebar({
       (t.dependsOn ?? []).every((d) => byId.get(d)?.status === "done"),
   );
 
-  const startAll = () => {
-    upNext.forEach((t) => start.mutate({ taskId: t.id }));
-  };
+  // Doc-authoring executions, bucketed by status.
+  const docExecs = (executions ?? []).filter((e) => e.kind === "doc");
+  const docOngoing = docExecs.filter(
+    (e) => e.status === "running" || e.status === "awaiting_input",
+  );
+  const docDone = docExecs.filter((e) => e.status === "completed");
 
-  const empty = !executing.length && !inReview.length && !upNext.length;
+  const openDoc = (entryId: string) =>
+    navigate(`/p/${encodeURIComponent(project ?? "")}/design?doc=${entryId}`);
+
+  const startAll = () => upNext.forEach((t) => start.mutate({ taskId: t.id }));
+
+  const empty =
+    !executing.length && !inReview.length && !upNext.length &&
+    !docExecs.length && !doneTasks.length;
 
   return (
     <aside className="flex h-full w-72 flex-col overflow-auto border-r border-slate-200 bg-slate-50">
       <div className="border-b border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700">
-        Tasks
+        Executions
       </div>
       {empty ? (
         <p className="p-3 text-sm text-slate-400">
-          No tasks to build yet. Create them in Plan, or finish a task's dependencies.
+          Nothing yet. Create docs/tasks in Design or Plan, or finish a task's dependencies.
         </p>
       ) : (
         <>
-          <Section label="Executing" count={executing.length}>
+          <Section label="Ongoing" count={executing.length + docOngoing.length}>
             {executing.map((t) => (
               <Row key={t.id} task={t} selected={t.id === selectedId} onSelect={() => onSelect(t.id)} />
+            ))}
+            {docOngoing.map((e) => (
+              <DocRow key={e.executionId} exec={e} entry={nameById.get(e.taskId)} onClick={() => openDoc(e.taskId)} />
             ))}
           </Section>
           <Section label="In review" count={inReview.length}>
@@ -82,6 +112,14 @@ export function BuildSidebar({
               <Row key={t.id} task={t} selected={t.id === selectedId} onSelect={() => onSelect(t.id)} />
             ))}
           </Section>
+          <Section label="Done" count={doneTasks.length + docDone.length} collapsed>
+            {doneTasks.map((t) => (
+              <Row key={t.id} task={t} selected={t.id === selectedId} onSelect={() => onSelect(t.id)} />
+            ))}
+            {docDone.map((e) => (
+              <DocRow key={e.executionId} exec={e} entry={nameById.get(e.taskId)} onClick={() => openDoc(e.taskId)} />
+            ))}
+          </Section>
         </>
       )}
     </aside>
@@ -92,14 +130,16 @@ function Section({
   label,
   count,
   action,
+  collapsed = false,
   children,
 }: {
   label: string;
   count: number;
   action?: React.ReactNode;
+  collapsed?: boolean;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(!collapsed);
   return (
     <div className="border-b border-slate-200">
       <div className="flex w-full items-center gap-2 px-3 py-2">
@@ -165,6 +205,32 @@ function Row({
       {task.status === "in_progress" && task.executionId && !errored && !blocked && (
         <Spinner className="text-blue-500" />
       )}
+    </button>
+  );
+}
+
+// A doc-authoring execution row (opens in the Design tab). Marked with a doc glyph.
+function DocRow({
+  exec,
+  entry,
+  onClick,
+}: {
+  exec: ProgressState;
+  entry?: MetadataEntry;
+  onClick: () => void;
+}) {
+  const running = exec.status === "running" || exec.status === "awaiting_input";
+  const failed = exec.status === "failed";
+  return (
+    <button
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-slate-600 hover:bg-slate-100"
+      onClick={onClick}
+      title="Open in Design"
+    >
+      <span className="shrink-0 text-xs text-slate-400">📄</span>
+      <span className="min-w-0 flex-1 truncate">{entry?.name ?? exec.taskId}</span>
+      {failed && <span className="shrink-0 text-xs text-red-500">⚠</span>}
+      {running && <Spinner className="text-slate-400" />}
     </button>
   );
 }

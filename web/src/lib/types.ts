@@ -27,12 +27,7 @@ export interface RelatedPR {
   state: string;
 }
 
-export interface Operation {
-  type: "generate" | "chat" | "address";
-  status: "running" | "failed";
-  startedAt: string;
-  error?: string | null;
-}
+export type ExecutionKind = "task" | "doc";
 
 export interface MetadataEntry {
   id: string;
@@ -45,10 +40,12 @@ export interface MetadataEntry {
   dependsOn: string[];
   custom: Record<string, unknown>;
   executionId?: string | null;
+  // The doc-kind authoring execution for this entry (unified executions); reused for
+  // follow-up / chat / comment-edits. executionId above is the task build.
+  authoringExecutionId?: string | null;
   executionError?: boolean;
   executionBlocked?: boolean;
   repo?: string | null;
-  operation?: Operation | null;
   file: string;
   createdAt: string;
   updatedAt: string;
@@ -97,14 +94,6 @@ export interface PermissionsConfig {
   additionalReadDirs: string[];
   generation: PermissionProfile;
   execution: PermissionProfile;
-}
-
-export interface OperationEvent {
-  entryId: string;
-  collection: "docs" | "tasks";
-  type: string;
-  status: string;
-  error?: string | null;
 }
 
 export interface CommentAnchor {
@@ -174,13 +163,16 @@ export interface Step {
 
 export interface ProgressState {
   executionId: string;
-  taskId: string;
+  taskId: string; // the entry this execution belongs to (task or doc id)
+  collection: "docs" | "tasks";
+  kind: ExecutionKind;
   branch?: string | null;
   baseSha?: string | null;
   sessionId?: string | null;
   status: ProgressStatus;
   error?: string | null;
   activity?: string | null;
+  bodyBefore?: string | null;
   doneSummary?: string | null;
   pendingQuestions: Question[];
   pendingPermissions: PermissionRequest[];
@@ -215,11 +207,6 @@ export interface DiffComment {
 
 export interface CommentsFile {
   byCommit: Record<string, DiffComment[]>;
-}
-
-export interface AddressResponse {
-  revisedBody: string;
-  addressedCommentIds: string[];
 }
 
 export interface ApiError {

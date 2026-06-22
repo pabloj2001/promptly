@@ -2,8 +2,8 @@ import { useState } from "react";
 import { Spinner } from "../../components/Spinner";
 import { GenerateTasksButton } from "../../components/GenerateTasksButton";
 import { STATUS_META } from "../../lib/status";
-import { useDocs, useTasks } from "../../lib/queries";
-import type { MetadataEntry } from "../../lib/types";
+import { useDocs, useExecutions, useTasks } from "../../lib/queries";
+import type { MetadataEntry, ProgressState } from "../../lib/types";
 import { EditableMetadata } from "./EditableMetadata";
 import { AddEntryDialog } from "./AddEntryDialog";
 
@@ -20,6 +20,10 @@ export function Sidebar({
 }) {
   const { data: docs } = useDocs();
   const { data: tasks } = useTasks();
+  const { data: executions } = useExecutions();
+  const execById = new Map<string, ProgressState>(
+    (executions ?? []).map((e) => [e.executionId, e]),
+  );
   const [showRemoved, setShowRemoved] = useState(false);
   const [metaOpen, setMetaOpen] = useState(true);
   const [newKind, setNewKind] = useState<NewKind>(null);
@@ -33,7 +37,11 @@ export function Sidebar({
   );
 
   const Row = ({ entry }: { entry: MetadataEntry }) => {
-    const op = entry.operation;
+    const prog = entry.authoringExecutionId
+      ? execById.get(entry.authoringExecutionId)
+      : undefined;
+    const running = prog?.status === "running" || prog?.status === "awaiting_input";
+    const failed = prog?.status === "failed";
     const meta = entry.status ? STATUS_META[entry.status] : null;
     const removed = entry.status === "removed";
     return (
@@ -56,9 +64,9 @@ export function Sidebar({
         >
           {entry.name}
         </span>
-        {op?.status === "running" && <Spinner className="text-slate-400" />}
-        {op?.status === "failed" && (
-          <span title={op.error ?? "failed"} className="text-xs text-red-500">
+        {running && <Spinner className="text-slate-400" />}
+        {failed && (
+          <span title={prog?.error ?? "failed"} className="text-xs text-red-500">
             ⚠
           </span>
         )}

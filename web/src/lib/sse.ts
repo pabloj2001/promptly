@@ -8,35 +8,6 @@ import { useUiStore } from "../store";
 import type { ProgressState } from "./types";
 
 /**
- * Subscribe to the per-project operations stream (03/05). On each `operation`
- * event, refresh the affected doc/task + lists so the Design loading states resolve
- * live. Subscribe once at the project level.
- */
-export function useOperationsStream() {
-  const qc = useQueryClient();
-  const project = useUiStore((s) => s.activeProject);
-
-  useEffect(() => {
-    if (!project) return;
-    const url = `/api/operations/stream?project=${encodeURIComponent(project)}`;
-    const es = new EventSource(url);
-    es.addEventListener("operation", (e) => {
-      const data = JSON.parse((e as MessageEvent).data) as {
-        entryId: string;
-        collection: "docs" | "tasks";
-      };
-      qc.invalidateQueries({ queryKey: [data.collection, project] });
-      qc.invalidateQueries({ queryKey: ["entry", project, data.collection, data.entryId] });
-      qc.invalidateQueries({ queryKey: ["chat", project, data.collection, data.entryId] });
-    });
-    es.onerror = () => {
-      /* EventSource auto-reconnects; nothing to do */
-    };
-    return () => es.close();
-  }, [project, qc]);
-}
-
-/**
  * Subscribe to one execution's SSE stream (07/08). Every event carries the full
  * ProgressState, so we just write it into the `["execution", …]` cache. On a
  * status change we also refresh the task lists (task status flips with the run)
@@ -64,9 +35,19 @@ export function useExecutionStream(executionId: string | null) {
     }
     es.addEventListener("status", (e) => {
       setState(e);
+      // A status change can flip a task status, finalize a doc body, or update the
+      // executions list — refresh the lists + this execution's diff. (Doc-authoring
+      // executions live in the Design tab too, so refresh docs as well.)
+      const data = JSON.parse((e as MessageEvent).data) as ProgressState;
       qc.invalidateQueries({ queryKey: ["tasks", project] });
       qc.invalidateQueries({ queryKey: ["taskGraph", project] });
+      qc.invalidateQueries({ queryKey: ["docs", project] });
+      qc.invalidateQueries({ queryKey: ["executions", project] });
       qc.invalidateQueries({ queryKey: ["diff", project, executionId] });
+      qc.invalidateQueries({
+        queryKey: ["entry", project, data.collection, data.taskId],
+      });
+      qc.invalidateQueries({ queryKey: ["chat", project, data.collection, data.taskId] });
     });
     es.onerror = () => {
       /* EventSource auto-reconnects; the snapshot-on-connect re-syncs state */
