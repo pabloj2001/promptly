@@ -24,7 +24,6 @@ from ..models import (
     DocType,
     ExecutionKind,
     MetadataEntry,
-    Operation,
     PermissionRequest,
     PermissionsConfig,
     ProjectRepo,
@@ -518,102 +517,6 @@ class StorageService:
                 if r.id == repo_id:
                     return r
         return next(r for r in repos if r.primary)
-
-    # ── Async operations (03/05) ──────────────────────────────────────────────────
-
-    def create_placeholder(
-        self,
-        root: str,
-        name: str,
-        *,
-        type: DocType | str,
-        provisional_name: str,
-        depends_on: Optional[list[str]] = None,
-        task_group: Optional[str] = None,
-        custom: Optional[dict[str, Any]] = None,
-        repo: Optional[str] = None,
-    ) -> MetadataEntry:
-        """Create a metadata entry with an empty body and a running ``generate``
-        operation, so it shows in the sidebar (with a spinner) immediately. The
-        body/name/description fill in via :meth:`finalize_generation`."""
-        entry = self.create_entry(
-            root, name, type=type, display_name=provisional_name, body="",
-            description="", depends_on=depends_on, task_group=task_group, custom=custom,
-            repo=repo,
-        )
-        op = Operation(type="generate", status="running", started_at=_now())
-        collection = self._collection_for(entry.type)
-        return self.patch_metadata(
-            root, name, collection, entry.id,
-            {"operation": op.model_dump(by_alias=True)},
-        )
-
-    def finalize_generation(
-        self, root: str, name: str, entry_id: str, *, body: str,
-        display_name: Optional[str] = None, description: Optional[str] = None,
-    ) -> MetadataEntry:
-        """Write the generated body + metadata and clear the operation. Renames
-        the file to match the final name (except the project spec)."""
-        collection_guess = "docs"
-        if entry_id not in self.read_metadata(root, name, "docs"):
-            collection_guess = "tasks"
-        entry = self.get_entry(root, name, collection_guess, entry_id)
-        self._write_body_file(root, name, entry.file, body, [])
-
-        patch: dict[str, Any] = {"operation": None}
-        if description is not None:
-            patch["description"] = description
-        if display_name:
-            patch["name"] = display_name
-            if entry.type != DocType.project_spec.value:
-                self._maybe_rename(root, name, collection_guess, entry, display_name, patch)
-        return self.patch_metadata(root, name, collection_guess, entry_id, patch)
-
-    def _maybe_rename(
-        self, root: str, name: str, collection: str, entry: MetadataEntry,
-        new_name: str, patch: dict[str, Any],
-    ) -> None:
-        sub = "tasks" if collection == "tasks" else "docs"
-        new_slug = slugify(new_name)
-        if Path(entry.file).stem == new_slug:
-            return
-        others = self.read_metadata(root, name, collection)
-        taken = {Path(e.file).stem for eid, e in others.items() if eid != entry.id}
-        new_slug = dedupe_slug(new_slug, taken)
-        new_file = f"{sub}/{new_slug}.md"
-        old_abs = self._body_abs(root, name, entry.file)
-        new_abs = self._body_abs(root, name, new_file)
-        if old_abs.exists():
-            new_abs.parent.mkdir(parents=True, exist_ok=True)
-            import os
-            os.replace(old_abs, new_abs)
-        patch["file"] = new_file
-
-    def begin_operation(
-        self, root: str, name: str, collection: str, entry_id: str, op_type: str
-    ) -> MetadataEntry:
-        op = Operation(type=op_type, status="running", started_at=_now())
-        return self.patch_metadata(
-            root, name, collection, entry_id,
-            {"operation": op.model_dump(by_alias=True)},
-        )
-
-    def clear_operation(
-        self, root: str, name: str, collection: str, entry_id: str
-    ) -> MetadataEntry:
-        return self.patch_metadata(root, name, collection, entry_id, {"operation": None})
-
-    def fail_operation(
-        self, root: str, name: str, collection: str, entry_id: str, error: str
-    ) -> MetadataEntry:
-        entry = self.get_entry(root, name, collection, entry_id)
-        op = entry.operation or Operation(type="generate", started_at=_now())
-        op.status = "failed"
-        op.error = error
-        return self.patch_metadata(
-            root, name, collection, entry_id,
-            {"operation": op.model_dump(by_alias=True)},
-        )
 
     # ── Doc chat history (01/05) ──────────────────────────────────────────────────
 

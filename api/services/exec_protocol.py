@@ -67,6 +67,8 @@ DOC_COMMAND_SCHEMA: dict = {
         "type": {"type": "string", "enum": DOC_COMMAND_TYPES},
         "question": {"type": "string"},
         "body": {"type": "string"},
+        "name": {"type": "string"},
+        "description": {"type": "string"},
         "reply": {"type": "string"},
         "summary": {"type": "string"},
         "text": {"type": "string"},

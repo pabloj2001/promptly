@@ -96,15 +96,6 @@ class RelatedPR(CamelModel):
     state: str
 
 
-class Operation(CamelModel):
-    """An in-flight AI operation on a doc/task (03/05). null when idle."""
-
-    type: str  # "generate" | "chat" | "address"
-    status: str = "running"  # "running" | "failed"
-    started_at: str
-    error: Optional[str] = None
-
-
 class MetadataEntry(CamelModel):
     id: str
     name: str
@@ -123,7 +114,6 @@ class MetadataEntry(CamelModel):
     authoring_execution_id: Optional[str] = None
     # Target repo id for this task (10); None ⇒ the project-primary repo.
     repo: Optional[str] = None
-    operation: Optional[Operation] = None
     # True when this task's execution hit an error needing user attention (the Build
     # sidebar highlights it red); cleared on resume/completion.
     execution_error: bool = False

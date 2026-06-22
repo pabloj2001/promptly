@@ -15,7 +15,6 @@ from fastapi import Depends, Query
 
 from .services.claude import ClaudeService
 from .services.execution import ExecutionManager, SSEBus
-from .services.operations import OperationManager
 from .storage import NotFoundError, StorageService
 
 # Process-wide singletons.
@@ -36,7 +35,6 @@ _claude = ClaudeService(
     api_url=_api_url,
 )
 _execution = ExecutionManager(_storage, _bus, claude=_claude)
-_operations = OperationManager(_storage, _claude)
 
 
 def get_storage() -> StorageService:
@@ -49,10 +47,6 @@ def get_claude() -> ClaudeService:
 
 def get_execution() -> ExecutionManager:
     return _execution
-
-
-def get_operations() -> OperationManager:
-    return _operations
 
 
 def get_internal_token() -> str:

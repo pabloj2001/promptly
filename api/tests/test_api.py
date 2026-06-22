@@ -1,9 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from api.deps import get_claude, get_operations, get_storage
+from api.deps import get_claude, get_execution, get_storage
 from api.main import create_app
-from api.services.claude import GeneratedDoc
 
 
 class FakeClaude:
@@ -33,53 +32,80 @@ class FakeClaude:
         }
 
 
-class FakeOperations:
-    """Runs 'background' work synchronously so tests are deterministic (no real CLI,
-    no event-loop timing). Mirrors OperationManager's interface."""
+_IMPORT_STATUSES = {"in_progress", "in_review", "blocked", "done"}
 
-    def __init__(self, storage):
+
+class FakeExecution:
+    """Runs authoring executions synchronously so tests are deterministic (no real CLI,
+    no event-loop timing). Mirrors ExecutionManager.start_authoring's observable effects:
+    create/reuse the entry's authoring execution, apply the body/metadata, complete."""
+
+    def __init__(self, storage, claude):
         self.storage = storage
+        self.claude = claude
 
-    def start_generation(self, root, project, entry_id, collection, *, prompt, type,
-                         depends_on, name_hint):
-        tval = type.value if hasattr(type, "value") else type
-        self.storage.finalize_generation(
-            root, project, entry_id,
-            body=f"# {prompt}\n\nGenerated body for: {prompt}",
-            display_name=name_hint or f"Generated {tval}",
-            description="auto description",
-        )
-
-    def start_chat(self, root, project, collection, entry_id, *, message):
-        self.storage.append_chat_message(
-            root, project, collection, entry_id, "assistant", f"ack: {message}",
-        )
-        self.storage.clear_operation(root, project, collection, entry_id)
-
-    def start_import_metadata(self, root, project, entry_id, collection, *, doc_type):
+    async def start_authoring(self, root, project, collection, entry_id, *, mode,
+                              message=""):
         entry = self.storage.get_entry(root, project, collection, entry_id)
-        _, body, _ = self.storage.read_document(root, project, collection, entry_id)
-        patch = {"description": "auto import description", "name": f"AI {entry.name}"}
-        if collection == "tasks":
-            patch["taskGroup"] = "Imported"
-            others = [
-                t.id
-                for t in self.storage.read_metadata(root, project, "tasks").values()
-                if t.id != entry_id and t.status != "removed"
-            ]
-            if others:
-                patch["dependsOn"] = others[:1]
-            if "DONE" in body:
-                patch["status"] = "done"
-        self.storage.patch_metadata(root, project, collection, entry_id, patch)
-        self.storage.clear_operation(root, project, collection, entry_id)
+        eid = entry.authoring_execution_id
+        if not eid or self.storage.read_progress(root, project, eid) is None:
+            eid = f"auth-{entry_id}"
+            self.storage.create_execution(
+                root, project, eid, entry_id, kind="doc", collection=collection)
+            self.storage.patch_metadata(
+                root, project, collection, entry_id, {"authoringExecutionId": eid})
+
+        if mode == "generate":
+            self.storage.save_body(
+                root, project, collection, entry_id,
+                f"# {message}\n\nGenerated body for: {message}")
+            self.storage.patch_metadata(
+                root, project, collection, entry_id, {"description": "auto description"})
+        elif mode == "import":
+            _, body, _ = self.storage.read_document(root, project, collection, entry_id)
+            existing = None
+            if collection == "tasks":
+                existing = [{"id": t.id, "name": t.name, "description": t.description}
+                            for t in self.storage.read_metadata(root, project, "tasks").values()
+                            if t.id != entry_id and t.status != "removed"]
+            meta = await self.claude.derive_import_metadata(
+                root=root, project=project, body=body, doc_type=entry.type,
+                current_name=entry.name, existing_tasks=existing)
+            patch = {"description": meta.get("description", "")}
+            if meta.get("name"):
+                patch["name"] = meta["name"]
+            if collection == "tasks":
+                if meta.get("task_group"):
+                    patch["taskGroup"] = meta["task_group"]
+                known = {t["id"] for t in (existing or [])}
+                deps = [d for d in meta.get("depends_on", []) if d in known]
+                if deps:
+                    patch["dependsOn"] = deps
+                if meta.get("status") in _IMPORT_STATUSES:
+                    patch["status"] = meta["status"]
+            self.storage.patch_metadata(root, project, collection, entry_id, patch)
+        elif mode == "chat":
+            self.storage.append_chat_message(
+                root, project, collection, entry_id, "assistant", f"ack: {message}")
+        elif mode == "comment":
+            _, body, _ = self.storage.read_document(root, project, collection, entry_id)
+            self.storage.save_body(
+                root, project, collection, entry_id, body + "\n\n<!-- addressed -->")
+
+        self.storage.set_execution_status(root, project, eid, "completed")
+        return self.storage.read_progress(root, project, eid)
+
+    def pr_status(self, root, project, task):
+        return {"hasPr": False, "merged": False, "state": "none"}
 
 
 @pytest.fixture
 def client(promptly_home, root):
     app = create_app()
-    app.dependency_overrides[get_claude] = lambda: FakeClaude()
-    app.dependency_overrides[get_operations] = lambda: FakeOperations(get_storage())
+    fake_claude = FakeClaude()
+    app.dependency_overrides[get_claude] = lambda: fake_claude
+    app.dependency_overrides[get_execution] = lambda: FakeExecution(
+        get_storage(), fake_claude)
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -138,7 +164,7 @@ def test_create_doc_via_prompt(client, proj):
     # FakeOperations finalized synchronously, so the body is already filled in.
     got = client.get(f"/docs/{entry['id']}", params=q(proj)).json()
     assert "Generated body" in got["body"]
-    assert got["meta"]["operation"] is None
+    assert got["meta"]["authoringExecutionId"]
     assert got["comments"] == []
 
 
@@ -162,8 +188,8 @@ def test_import_doc_verbatim(client, proj):
     assert entry["file"] == "docs/imported.md"
     got = client.get(f"/docs/{entry['id']}", params=q(proj)).json()
     assert got["body"].strip() == "# Hi\nverbatim"  # body written verbatim
-    # AI fills metadata in the background (synchronous in tests): op cleared, desc set.
-    assert got["meta"]["operation"] is None
+    # AI fills metadata via the authoring execution (synchronous in tests).
+    assert got["meta"]["authoringExecutionId"]
     assert got["meta"]["description"] == "auto import description"
 
 
@@ -212,15 +238,15 @@ def test_import_infers_status_when_stated(client, proj):
 
 
 def test_import_doc_real_spawn(promptly_home, root):
-    # Regression: import_doc must be `async def` so its background-metadata spawn
-    # (asyncio.create_task) has a running loop. A sync endpoint runs in a threadpool
+    # Regression: import_doc must be `async def` so the authoring execution's background
+    # spawn (asyncio.create_task) has a running loop. A sync endpoint runs in a threadpool
     # with no loop → 500 "Internal Server Error" → the client's JSON.parse blows up.
-    from api.services.operations import OperationManager
+    from api.services.execution import ExecutionManager
 
     app = create_app()
     app.dependency_overrides[get_claude] = lambda: FakeClaude()
-    app.dependency_overrides[get_operations] = lambda: OperationManager(
-        get_storage(), FakeClaude()
+    app.dependency_overrides[get_execution] = lambda: ExecutionManager(
+        get_storage(), claude=FakeClaude()
     )
     c = TestClient(app, raise_server_exceptions=False)
     c.post("/projects", json={"name": "Demo", "root": root})
@@ -250,8 +276,8 @@ def test_generate_tasks_from_spec(client, proj):
 
     tasks = client.get("/tasks", params=q(proj)).json()
     by_name = {t["name"]: t for t in tasks}
-    # FakeOperations finalized bodies synchronously
-    assert by_name["Auth"]["operation"] is None
+    # bodies authored synchronously via each task's authoring execution
+    assert by_name["Auth"]["authoringExecutionId"]
     # dependency resolved by name -> id
     db_id = by_name["Set up DB"]["id"]
     assert by_name["Auth"]["dependsOn"] == [db_id]
@@ -329,12 +355,14 @@ def test_comments_lifecycle(client, proj):
     assert upd.json()["resolved"] is True
 
 
-def test_address_comments_preview(client, proj):
+def test_address_comments_starts_execution(client, proj):
     e = client.post("/docs", params=q(proj),
                     json={"prompt": "x", "type": "doc", "name": "D"}).json()
     r = client.post(f"/docs/{e['id']}/address", params=q(proj))
     assert r.status_code == 200
-    assert "addressed" in r.json()["revisedBody"]
+    assert r.json()["status"] == "completed"  # authoring execution (comment mode)
+    body = client.get(f"/docs/{e['id']}", params=q(proj)).json()["body"]
+    assert "addressed" in body  # revision applied directly
 
 
 def test_soft_delete_doc(client, proj):
@@ -389,11 +417,13 @@ def test_cycle_rejected_via_metadata(client, proj):
     assert r.status_code == 422
 
 
-def test_task_address_preview(client, proj):
+def test_task_address_starts_execution(client, proj):
     t = client.post("/tasks", params=q(proj), json={"prompt": "t", "name": "T"}).json()
     r = client.post(f"/tasks/{t['id']}/address", params=q(proj))
     assert r.status_code == 200
-    assert "addressed" in r.json()["revisedBody"]
+    assert r.json()["status"] == "completed"
+    body = client.get(f"/tasks/{t['id']}", params=q(proj)).json()["body"]
+    assert "addressed" in body
 
 
 def test_metadata_custom_patch(client, proj):

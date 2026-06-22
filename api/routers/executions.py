@@ -80,6 +80,17 @@ async def resume(
     return await em.resume(ap.root, ap.name, execution_id)
 
 
+@router.post("/{execution_id}/followup", response_model=ProgressState)
+async def followup(
+    execution_id: str,
+    req: FeedbackRequest,
+    ap: ActiveProject = Depends(get_active_project),
+    em: ExecutionManager = Depends(get_execution),
+):
+    """Reopen a completed doc-authoring execution to apply a follow-up instruction."""
+    return await em.followup(ap.root, ap.name, execution_id, req.message)
+
+
 @router.post("/{execution_id}/answer", response_model=ProgressState)
 async def answer(
     execution_id: str,

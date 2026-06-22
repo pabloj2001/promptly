@@ -728,6 +728,17 @@ class ExecutionManager:
             changed = isinstance(body, str) and body.strip() != ""
             if changed:
                 self.storage.save_body(root, project, collection, entry_id, body)
+            # Generation also names + describes the document.
+            patch: dict = {}
+            if str(cmd.get("name", "")).strip():
+                patch["name"] = str(cmd["name"]).strip()
+            if str(cmd.get("description", "")).strip():
+                patch["description"] = str(cmd["description"]).strip()
+            if patch:
+                try:
+                    self.storage.patch_metadata(root, project, collection, entry_id, patch)
+                except NotFoundError:
+                    pass
             reply = str(cmd.get("reply", "")).strip()
             if reply:  # chat mode — record the assistant turn
                 self.storage.append_chat_message(

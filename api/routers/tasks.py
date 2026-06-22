@@ -9,10 +9,17 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 
 from ..deps import ActiveProject, get_active_project, get_claude, get_execution, get_storage
-from ..models import ChatHistory, ChatMessage, Comment, DependencyGraph, DocType, MetadataEntry
+from ..models import (
+    ChatHistory,
+    ChatMessage,
+    Comment,
+    DependencyGraph,
+    DocType,
+    MetadataEntry,
+    ProgressState,
+)
 from ..schemas import (
     AddCommentRequest,
-    AddressResponse,
     ChatRequest,
     CreateTaskRequest,
     DocOut,
@@ -20,10 +27,8 @@ from ..schemas import (
     StatusChange,
     UpdateCommentRequest,
 )
-from ..deps import get_claude, get_operations
 from ..services.claude import ClaudeService
 from ..services.execution import ExecutionManager
-from ..services.operations import OperationManager
 from ..storage import ConflictError, StorageError, StorageService, ValidationError
 from ._helpers import provisional_name
 
@@ -63,19 +68,18 @@ async def create_task(
     req: CreateTaskRequest,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
-    ops: OperationManager = Depends(get_operations),
+    em: ExecutionManager = Depends(get_execution),
 ):
-    """Async: placeholder now, task spec generated in the background (03/05)."""
-    entry = storage.create_placeholder(
+    """Async: create the task entry (empty body) and start its authoring execution; the
+    spec is written in the background (unified executions)."""
+    entry = storage.create_entry(
         ap.root, ap.name, type=DocType.task,
-        provisional_name=req.name or provisional_name(req.prompt),
-        depends_on=req.depends_on, task_group=req.task_group, repo=req.repo,
+        display_name=req.name or provisional_name(req.prompt),
+        body="", depends_on=req.depends_on, task_group=req.task_group, repo=req.repo,
     )
-    ops.start_generation(
-        ap.root, ap.name, entry.id, COLLECTION,
-        prompt=req.prompt, type=DocType.task, depends_on=req.depends_on, name_hint=req.name,
-    )
-    return entry
+    await em.start_authoring(
+        ap.root, ap.name, COLLECTION, entry.id, mode="generate", message=req.prompt)
+    return storage.get_entry(ap.root, ap.name, COLLECTION, entry.id)
 
 
 @router.post("/generate-from-spec", response_model=list[MetadataEntry], status_code=202)
@@ -83,10 +87,10 @@ async def generate_from_spec(
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
     claude: ClaudeService = Depends(get_claude),
-    ops: OperationManager = Depends(get_operations),
+    em: ExecutionManager = Depends(get_execution),
 ):
-    """Break the project spec into tasks (03): plan -> create placeholders ->
-    resolve deps -> generate each body in the background. Returns placeholders."""
+    """Break the project spec into tasks (03): plan -> create entries -> resolve deps ->
+    author each spec in the background via its authoring execution. Returns the entries."""
     docs = storage.read_metadata(ap.root, ap.name, "docs")
     if not any(d.type == DocType.project_spec.value for d in docs.values()):
         raise ValidationError("no project spec to generate tasks from")
@@ -94,34 +98,32 @@ async def generate_from_spec(
     stubs = await claude.plan_tasks(root=ap.root, project=ap.name)
 
     name_to_id: dict[str, str] = {}
-    placeholders = []
+    entries = []
     for stub in stubs:
-        ph = storage.create_placeholder(
-            ap.root, ap.name, type=DocType.task,
-            provisional_name=stub.name, task_group=stub.task_group,
+        entry = storage.create_entry(
+            ap.root, ap.name, type=DocType.task, display_name=stub.name,
+            body="", task_group=stub.task_group,
         )
-        name_to_id[stub.name] = ph.id
-        placeholders.append(ph)
+        name_to_id[stub.name] = entry.id
+        entries.append(entry)
 
-    # Resolve dependsOn (by name) and kick off each task's body generation.
-    for stub, ph in zip(stubs, placeholders):
+    # Resolve dependsOn (by name) and kick off each task's spec authoring.
+    for stub, entry in zip(stubs, entries):
         deps = [
             name_to_id[d] for d in stub.depends_on
-            if d in name_to_id and name_to_id[d] != ph.id
+            if d in name_to_id and name_to_id[d] != entry.id
         ]
         if deps:
             try:
-                storage.patch_metadata(ap.root, ap.name, COLLECTION, ph.id,
+                storage.patch_metadata(ap.root, ap.name, COLLECTION, entry.id,
                                        {"dependsOn": deps})
             except ValidationError:
                 deps = []  # skip dep edges that would cycle
-        ops.start_generation(
-            ap.root, ap.name, ph.id, COLLECTION,
-            prompt=f"{stub.name}: {stub.description}",
-            type=DocType.task, depends_on=deps, name_hint=stub.name,
-        )
+        await em.start_authoring(
+            ap.root, ap.name, COLLECTION, entry.id, mode="generate",
+            message=f"{stub.name}: {stub.description}")
 
-    return placeholders
+    return [storage.get_entry(ap.root, ap.name, COLLECTION, e.id) for e in entries]
 
 
 @router.put("/{task_id}", response_model=MetadataEntry)
@@ -186,21 +188,15 @@ def set_status(
     return updated
 
 
-@router.post("/{task_id}/address", response_model=AddressResponse)
+@router.post("/{task_id}/address", response_model=ProgressState)
 async def address_comments(
     task_id: str,
     ap: ActiveProject = Depends(get_active_project),
-    storage: StorageService = Depends(get_storage),
-    claude: ClaudeService = Depends(get_claude),
+    em: ExecutionManager = Depends(get_execution),
 ):
-    _, body, comments = storage.read_document(ap.root, ap.name, COLLECTION, task_id)
-    unresolved = [c for c in comments if not c.resolved]
-    revised = await claude.address_comments(
-        root=ap.root, project=ap.name, body=body, comments=unresolved,
-    )
-    return AddressResponse(
-        revised_body=revised, addressed_comment_ids=[c.id for c in unresolved]
-    )
+    """Start an authoring execution (comment mode) that revises the task spec to address
+    its unresolved comments directly (unified executions)."""
+    return await em.start_authoring(ap.root, ap.name, COLLECTION, task_id, mode="comment")
 
 
 @router.get("/{task_id}/chat", response_model=ChatHistory)
@@ -218,12 +214,12 @@ async def post_chat(
     req: ChatRequest,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
-    ops: OperationManager = Depends(get_operations),
+    em: ExecutionManager = Depends(get_execution),
 ):
     storage.get_entry(ap.root, ap.name, COLLECTION, task_id)
     msg = storage.append_chat_message(ap.root, ap.name, COLLECTION, task_id, "user", req.message)
-    storage.begin_operation(ap.root, ap.name, COLLECTION, task_id, "chat")
-    ops.start_chat(ap.root, ap.name, COLLECTION, task_id, message=req.message)
+    await em.start_authoring(ap.root, ap.name, COLLECTION, task_id, mode="chat",
+                            message=req.message)
     return msg
 
 

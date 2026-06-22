@@ -32,8 +32,8 @@ output (no prose outside the command):
 
 - `{"type": "question", "question": "<what you need to know>"}` — ONLY when you are
   genuinely blocked and need the user to decide. Use sparingly; prefer sensible defaults.
-- `{"type": "done", "body": "<the FULL Markdown document>"{% if mode == "chat" %}, "reply": "<short chat reply to the user>"{% endif %}, "summary": "<one-line summary of what you did>"}`
-  when finished. `body` must be the complete document{% if mode in ("chat", "comment", "followup") %} — return the full revised body even if you changed only part of it{% endif %}.
+- `{"type": "done", "body": "<the FULL Markdown document>"{% if mode == "generate" %}, "name": "<short title>", "description": "<one-line summary>"{% endif %}{% if mode == "chat" %}, "reply": "<short chat reply to the user>"{% endif %}, "summary": "<one-line summary of what you did>"}`
+  when finished. `body` must be the complete document{% if mode in ("chat", "comment", "followup") %} — return the full revised body even if you changed only part of it{% endif %}.{% if mode == "generate" %} Also give a short `name` and one-line `description` for the document.{% endif %}
 - `{"type": "thinking", "text": "<short progress note>"}` — optional; you'll be resumed to continue.
 
 {% if mode == "chat" %}If the message is only a question (no change needed), return `done`

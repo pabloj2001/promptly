@@ -10,14 +10,19 @@ from fastapi import APIRouter, Depends
 from ..deps import (
     ActiveProject,
     get_active_project,
-    get_claude,
-    get_operations,
+    get_execution,
     get_storage,
 )
-from ..models import ChatHistory, ChatMessage, Comment, DocType, MetadataEntry
+from ..models import (
+    ChatHistory,
+    ChatMessage,
+    Comment,
+    DocType,
+    MetadataEntry,
+    ProgressState,
+)
 from ..schemas import (
     AddCommentRequest,
-    AddressResponse,
     ChatRequest,
     CreateDocRequest,
     DocOut,
@@ -25,8 +30,7 @@ from ..schemas import (
     SaveBodyRequest,
     UpdateCommentRequest,
 )
-from ..services.claude import ClaudeService
-from ..services.operations import OperationManager
+from ..services.execution import ExecutionManager
 from ..storage import StorageService
 from ._helpers import provisional_name
 
@@ -57,20 +61,19 @@ async def create_doc(
     req: CreateDocRequest,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
-    ops: OperationManager = Depends(get_operations),
+    em: ExecutionManager = Depends(get_execution),
 ):
-    """Async: create a placeholder (operation running) and return immediately; the
-    body/metadata are generated in the background (03/05)."""
-    entry = storage.create_placeholder(
+    """Async: create the entry (empty body) and start its authoring execution; the
+    body/metadata are written in the background (unified executions)."""
+    entry = storage.create_entry(
         ap.root, ap.name, type=req.type,
-        provisional_name=req.name or provisional_name(req.prompt),
-        depends_on=req.depends_on,
+        display_name=req.name or provisional_name(req.prompt),
+        body="", depends_on=req.depends_on,
     )
-    ops.start_generation(
-        ap.root, ap.name, entry.id, COLLECTION,
-        prompt=req.prompt, type=req.type, depends_on=req.depends_on, name_hint=req.name,
-    )
-    return entry
+    collection = "tasks" if req.type == DocType.task else "docs"
+    await em.start_authoring(
+        ap.root, ap.name, collection, entry.id, mode="generate", message=req.prompt)
+    return storage.get_entry(ap.root, ap.name, collection, entry.id)
 
 
 @router.post("/import", response_model=MetadataEntry, status_code=201)
@@ -78,17 +81,15 @@ async def import_doc(
     req: ImportDocRequest,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
-    ops: OperationManager = Depends(get_operations),
+    em: ExecutionManager = Depends(get_execution),
 ):
-    """Import an existing doc/task verbatim (the body is written as-is). Then kick off
-    a background AI operation to fill metadata (description, and taskGroup for tasks) —
-    the body is never modified."""
+    """Import an existing doc/task verbatim (the body is written as-is), then start an
+    authoring execution in `import` mode to fill metadata — the body is never modified."""
     entry = storage.create_entry(
         ap.root, ap.name, type=req.type, display_name=req.name, body=req.body,
     )
     collection = "tasks" if req.type == DocType.task else "docs"
-    storage.begin_operation(ap.root, ap.name, collection, entry.id, "generate")
-    ops.start_import_metadata(ap.root, ap.name, entry.id, collection, doc_type=req.type)
+    await em.start_authoring(ap.root, ap.name, collection, entry.id, mode="import")
     return storage.get_entry(ap.root, ap.name, collection, entry.id)
 
 
@@ -117,13 +118,14 @@ async def post_chat(
     req: ChatRequest,
     ap: ActiveProject = Depends(get_active_project),
     storage: StorageService = Depends(get_storage),
-    ops: OperationManager = Depends(get_operations),
+    em: ExecutionManager = Depends(get_execution),
 ):
-    """Append the user message + start a background chat turn (may revise the body)."""
+    """Append the user message + start the authoring execution in chat mode (the reply
+    and any body revision arrive over the execution stream)."""
     storage.get_entry(ap.root, ap.name, COLLECTION, doc_id)  # 404 if missing
     msg = storage.append_chat_message(ap.root, ap.name, COLLECTION, doc_id, "user", req.message)
-    storage.begin_operation(ap.root, ap.name, COLLECTION, doc_id, "chat")
-    ops.start_chat(ap.root, ap.name, COLLECTION, doc_id, message=req.message)
+    await em.start_authoring(ap.root, ap.name, COLLECTION, doc_id, mode="chat",
+                            message=req.message)
     return msg
 
 
@@ -152,23 +154,16 @@ def update_comment(
     return storage.update_comment(ap.root, ap.name, COLLECTION, doc_id, comment_id, patch)
 
 
-@router.post("/{doc_id}/address", response_model=AddressResponse)
+@router.post("/{doc_id}/address", response_model=ProgressState)
 async def address_comments(
     doc_id: str,
     ap: ActiveProject = Depends(get_active_project),
-    storage: StorageService = Depends(get_storage),
-    claude: ClaudeService = Depends(get_claude),
+    em: ExecutionManager = Depends(get_execution),
 ):
-    """Generate a revision addressing unresolved comments. Returns a preview;
-    the client accepts via PUT /docs/{id} (which re-anchors remaining comments)."""
-    _, body, comments = storage.read_document(ap.root, ap.name, COLLECTION, doc_id)
-    unresolved = [c for c in comments if not c.resolved]
-    revised = await claude.address_comments(
-        root=ap.root, project=ap.name, body=body, comments=unresolved,
-    )
-    return AddressResponse(
-        revised_body=revised, addressed_comment_ids=[c.id for c in unresolved]
-    )
+    """Start an authoring execution (comment mode) that revises the doc to address its
+    unresolved comments directly. Progress + the resulting diff stream over the
+    execution; comments are re-anchored when the new body is written."""
+    return await em.start_authoring(ap.root, ap.name, COLLECTION, doc_id, mode="comment")
 
 
 @router.delete("/{doc_id}", response_model=MetadataEntry)

@@ -15,7 +15,6 @@ from .routers import (
     executions,
     internal,
     metadata,
-    operations,
     permissions,
     projects,
     repos,
@@ -79,7 +78,6 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router)
     app.include_router(metadata.router)
     app.include_router(executions.router)
-    app.include_router(operations.router)
     app.include_router(permissions.router)
     app.include_router(settings.router)
     app.include_router(repos.router)
