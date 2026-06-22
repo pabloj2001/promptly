@@ -296,6 +296,28 @@ def test_execution_progress_roundtrip(storage, project):
     assert storage.read_progress(root, name, "exec-1").session_id == "sess-abc"
 
 
+def test_create_doc_execution_records_kind_and_snapshot(storage, project):
+    name, root = project
+    state = storage.create_execution(
+        root, name, "exec-doc", "doc-1",
+        kind="doc", collection="docs", body_before="# before\n")
+    assert state.kind == "doc"
+    assert state.collection == "docs"
+    assert state.body_before == "# before\n"
+    storage.set_body_before(root, name, "exec-doc", "# updated\n")
+    assert storage.read_progress(root, name, "exec-doc").body_before == "# updated\n"
+
+
+def test_legacy_execution_defaults_to_task_kind(storage, project):
+    """Pre-unification progress.json has no kind/collection — they must default so
+    existing build executions keep working."""
+    name, root = project
+    storage.create_execution(root, name, "exec-legacy", "task-9")
+    read = storage.read_progress(root, name, "exec-legacy")
+    assert read.kind == "task"
+    assert read.collection == "tasks"
+
+
 def test_diff_comments_partitioned_by_commit(storage, project):
     from api.models import DiffComment
     name, root = project

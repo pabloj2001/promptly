@@ -51,6 +51,21 @@ class ProgressStatus(str, Enum):
     failed = "failed"
 
 
+class ExecutionKind(str, Enum):
+    """What an execution is doing (the unified async-AI model).
+
+    * ``task`` — the heavy build flow: git worktree/workspace, planned steps, PR,
+      finishes to ``in_review``; status reusable via feedback.
+    * ``doc`` — authoring a ``project_spec`` / ``doc`` / ``task``-spec entry: a
+      lighter turn loop (research → ask questions if needed → write the body). No
+      worktree/steps/PR; auto-completes (skips ``in_review``); reopened for
+      follow-up / chat / comment-edits. Diff is a body snapshot before/after.
+    """
+
+    task = "task"
+    doc = "doc"
+
+
 class StepStatus(str, Enum):
     pending = "pending"
     in_progress = "in_progress"
@@ -101,6 +116,11 @@ class MetadataEntry(CamelModel):
     depends_on: list[str] = Field(default_factory=list)
     custom: dict[str, Any] = Field(default_factory=dict)
     execution_id: Optional[str] = None
+    # The doc-kind authoring execution for this entry (unified executions): present
+    # on docs/specs and on task entries for their spec authoring. Reused (reopened)
+    # for follow-up / chat / comment-edits. ``execution_id`` above is the separate
+    # build execution (tasks only).
+    authoring_execution_id: Optional[str] = None
     # Target repo id for this task (10); None ⇒ the project-primary repo.
     repo: Optional[str] = None
     operation: Optional[Operation] = None
@@ -165,7 +185,14 @@ class Step(CamelModel):
 
 class ProgressState(CamelModel):
     execution_id: str
+    # The entry this execution belongs to. For ``kind=task`` it's the task id; for
+    # ``kind=doc`` it's the doc/spec/task-spec id. (Field name kept as ``task_id``
+    # for on-disk back-compat with pre-unification progress.json files.)
     task_id: str
+    # Which metadata collection ``task_id`` lives in, and what the execution does.
+    # Legacy files (build executions only) default correctly to tasks/task.
+    collection: str = "tasks"
+    kind: ExecutionKind = ExecutionKind.task
     branch: Optional[str] = None
     base_sha: Optional[str] = None
     session_id: Optional[str] = None
@@ -174,6 +201,9 @@ class ProgressState(CamelModel):
     status: ProgressStatus = ProgressStatus.running
     error: Optional[str] = None
     activity: Optional[str] = None  # latest live line-of-thinking (compact)
+    # doc kind: the entry body snapshotted when the execution (re)started, so the
+    # per-doc diff can compare it against the result.
+    body_before: Optional[str] = None
     done_summary: Optional[str] = None
     pending_questions: list[Question] = Field(default_factory=list)
     pending_permissions: list[PermissionRequest] = Field(default_factory=list)

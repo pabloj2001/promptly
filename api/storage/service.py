@@ -22,6 +22,7 @@ from ..models import (
     DependencyGraph,
     DiffComment,
     DocType,
+    ExecutionKind,
     MetadataEntry,
     Operation,
     PermissionRequest,
@@ -651,12 +652,17 @@ class StorageService:
     # ── Execution state ─────────────────────────────────────────────────────────
 
     def create_execution(
-        self, root: str, name: str, execution_id: str, task_id: str
+        self, root: str, name: str, execution_id: str, task_id: str,
+        *, kind: ExecutionKind | str = ExecutionKind.task,
+        collection: str = "tasks", body_before: Optional[str] = None,
     ) -> ProgressState:
         now = _now()
         state = ProgressState(
             execution_id=execution_id,
             task_id=task_id,
+            collection=collection,
+            kind=kind.value if isinstance(kind, ExecutionKind) else kind,
+            body_before=body_before,
             session_id=None,
             created_at=now,
             updated_at=now,
@@ -777,6 +783,15 @@ class StorageService:
     ) -> ProgressState:
         def fn(s: ProgressState) -> None:
             s.done_summary = summary
+        return self._mutate_progress(root, name, execution_id, fn)
+
+    def set_body_before(
+        self, root: str, name: str, execution_id: str, body: str
+    ) -> ProgressState:
+        """Snapshot the entry body at the start of a doc-kind execution (re)run, so
+        the per-doc diff can compare it against the result."""
+        def fn(s: ProgressState) -> None:
+            s.body_before = body
         return self._mutate_progress(root, name, execution_id, fn)
 
     def seed_steps(
