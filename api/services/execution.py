@@ -15,6 +15,7 @@ so this survives a server restart.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import os
 import subprocess
@@ -22,7 +23,13 @@ from typing import AsyncIterator, Optional
 
 from collections import defaultdict
 
-from ..models import ProgressState, ProgressStatus, RelatedPR, TaskStatus
+from ..models import (
+    ExecutionKind,
+    ProgressState,
+    ProgressStatus,
+    RelatedPR,
+    TaskStatus,
+)
 from ..storage import StorageService, NotFoundError, ConflictError
 from ..storage import paths
 from . import worktree
@@ -37,6 +44,10 @@ from .exec_protocol import (
 # (see drain_stdout) so this only governs throughput, not a hard per-line cap — but a
 # generous value avoids needless transport pauses on big stream-json events.
 _STREAM_LIMIT = 16 * 1024 * 1024  # 16 MiB
+
+# Statuses an import may infer (mirrors operations); "pending"/"removed" excluded so
+# import only ever moves a task off the default when the document clearly says so.
+_IMPORT_STATUSES = {"in_progress", "in_review", "blocked", "done"}
 
 
 class SSEBus:
@@ -328,18 +339,25 @@ class ExecutionManager:
 
     async def _run_turn(
         self, root: str, project: str, execution_id: str, prompt: str,
-        session_id: Optional[str],
+        session_id: Optional[str], *, kind: ExecutionKind = ExecutionKind.task,
     ) -> dict:
-        """Spawn one build turn; stream its live activity; return its command +
-        session id + exit info."""
-        layout = self._workspace_layout(root, project, execution_id)
-        granted = [p for p in self.storage.read_progress(root, project, execution_id)
-                   .pending_permissions if p.decision == "allow"]
-        spec = self.claude.build_run_command(
-            root, project, execution_id=execution_id,
-            worktree=layout["target_dir"], workspace=layout["workspace"],
-            prompt=prompt, session_id=session_id, granted=granted,
-        )
+        """Spawn one turn; stream its live activity; return its command + session id +
+        exit info. ``kind=doc`` uses the read-only doc-authoring invocation (no
+        worktree/hook); ``kind=task`` the full build session."""
+        if kind == ExecutionKind.doc:
+            spec = self.claude.build_doc_command(
+                root, project, execution_id=execution_id,
+                prompt=prompt, session_id=session_id,
+            )
+        else:
+            layout = self._workspace_layout(root, project, execution_id)
+            granted = [p for p in self.storage.read_progress(root, project, execution_id)
+                       .pending_permissions if p.decision == "allow"]
+            spec = self.claude.build_run_command(
+                root, project, execution_id=execution_id,
+                worktree=layout["target_dir"], workspace=layout["workspace"],
+                prompt=prompt, session_id=session_id, granted=granted,
+            )
 
         proc = await asyncio.create_subprocess_exec(
             *spec.args, cwd=spec.cwd, env=spec.env,
@@ -529,13 +547,20 @@ class ExecutionManager:
     def _set_error(
         self, root: str, project: str, execution_id: str, task_id: str, message: str,
     ) -> None:
-        """Put the execution into a user-visible error state (no auto-resume). Flags the
-        task so the Build sidebar highlights it red; the user resumes with Try again."""
+        """Put a task build into a user-visible error state (no auto-resume)."""
+        self._set_error_entry(root, project, execution_id, "tasks", task_id, message)
+
+    def _set_error_entry(
+        self, root: str, project: str, execution_id: str, collection: str,
+        entry_id: str, message: str,
+    ) -> None:
+        """Put any execution into a user-visible error state (no auto-resume). Flags the
+        entry so the sidebar highlights it red; the user resumes with Try again."""
         state = self.storage.set_execution_status(
             root, project, execution_id, ProgressStatus.failed, error=message)
         try:
             self.storage.patch_metadata(
-                root, project, "tasks", task_id, {"executionError": True})
+                root, project, collection, entry_id, {"executionError": True})
         except NotFoundError:
             pass
         self.publish_progress(execution_id, "status", state)
@@ -559,6 +584,254 @@ class ExecutionManager:
             root, project, "tasks", task_id,
             {"executionError": False, "executionBlocked": False})
         self.publish_progress(execution_id, "status", state)
+
+    # ── Doc authoring (unified executions: generate/import/chat/comment/followup) ──
+    #
+    # A doc-kind execution is the entry's single reusable authoring execution. It runs
+    # a lighter turn loop (research → ask questions if needed → write the body) with no
+    # worktree/steps/PR, and auto-completes (skipping in_review). The diff is a body
+    # snapshot before/after (see _doc_diff). `import` is a one-shot metadata derivation.
+
+    _MAX_DOC_TURNS = 40
+
+    async def start_authoring(
+        self, root: str, project: str, collection: str, entry_id: str,
+        *, mode: str, message: str = "",
+    ) -> ProgressState:
+        """Start (or reopen) the entry's authoring execution in one of the modes:
+        ``generate`` / ``import`` / ``chat`` / ``comment`` / ``followup``."""
+        if self.claude is None:
+            raise RuntimeError("ExecutionManager requires a ClaudeService")
+        entry = self.storage.get_entry(root, project, collection, entry_id)  # 404s
+        self.storage.ensure_gitignore(root)
+
+        eid = entry.authoring_execution_id
+        if not eid or self.storage.read_progress(root, project, eid) is None:
+            eid = _uuid()
+            self.storage.create_execution(
+                root, project, eid, entry_id, kind=ExecutionKind.doc, collection=collection)
+            self.storage.patch_metadata(
+                root, project, collection, entry_id, {"authoringExecutionId": eid})
+
+        _, body, _ = self.storage.read_document(root, project, collection, entry_id)
+        self.storage.set_body_before(root, project, eid, body)
+        self._set_running(root, project, eid, collection, entry_id, "Working…")
+
+        if mode == "import":
+            self._spawn_tracked(eid, self._run_import(root, project, eid, collection, entry_id))
+            return self.storage.read_progress(root, project, eid)
+
+        comments = None
+        if mode == "comment":
+            _, _, all_comments = self.storage.read_document(root, project, collection, entry_id)
+            comments = [{"quote": c.anchor.quote, "kind": c.kind, "body": c.body}
+                        for c in all_comments if not c.resolved]
+        prompt = self.claude.render_author_prompt(
+            root, project, mode=mode, doc_type=entry.type,
+            user_request=message if mode == "generate" else "",
+            body=body, message=message, comments=comments, name_hint=entry.name,
+        )
+        self._spawn_tracked(eid, self._run_doc(
+            root, project, eid, collection, entry_id, prompt))
+        return self.storage.read_progress(root, project, eid)
+
+    def _set_running(
+        self, root: str, project: str, execution_id: str, collection: str,
+        entry_id: str, activity: str,
+    ) -> None:
+        """Clear the entry's error/blocked flags, flip the execution to running, and
+        publish — so the UI drops any error banner immediately."""
+        try:
+            self.storage.patch_metadata(
+                root, project, collection, entry_id,
+                {"executionError": False, "executionBlocked": False})
+        except NotFoundError:
+            pass
+        self.storage.set_execution_status(root, project, execution_id, ProgressStatus.running)
+        state = self.storage.set_activity(root, project, execution_id, activity)
+        self.publish_progress(execution_id, "status", state)
+
+    async def _run_doc(
+        self, root: str, project: str, execution_id: str, collection: str,
+        entry_id: str, prompt: str, *, session_id: Optional[str] = None,
+    ) -> None:
+        sid = session_id
+        next_prompt = prompt
+        for _ in range(self._MAX_DOC_TURNS):
+            self._interrupt.pop(execution_id, None)
+            state = self.storage.set_execution_status(
+                root, project, execution_id, ProgressStatus.running)
+            self.publish_progress(execution_id, "status", state)
+
+            turn = await self._run_turn(
+                root, project, execution_id, next_prompt, sid, kind=ExecutionKind.doc)
+            if turn["session_id"] and not sid:
+                sid = turn["session_id"]
+                self.storage.set_execution_meta(
+                    root, project, execution_id, session_id=sid)
+
+            reason = self._interrupt.pop(execution_id, None)
+            if reason == "cancel":
+                state = self.storage.set_execution_status(
+                    root, project, execution_id, ProgressStatus.failed,
+                    error="cancelled by user")
+                self.publish_progress(execution_id, "status", state)
+                return
+
+            cmd = turn["command"]
+            if cmd is None:
+                cmd = read_transcript_command(sid) if sid else None
+            if cmd is None:
+                self._set_error_entry(
+                    root, project, execution_id, collection, entry_id,
+                    turn["stderr"] or "the AI didn't return a valid response "
+                    f"(exit {turn['returncode']}).")
+                return
+
+            action = self._handle_doc_command(
+                root, project, execution_id, collection, entry_id, cmd)
+            if action is None:
+                return  # paused (question) or finished (done) or errored
+            next_prompt = action
+
+        self._set_error_entry(root, project, execution_id, collection, entry_id,
+                              "stopped after too many turns without finishing.")
+
+    def _handle_doc_command(
+        self, root: str, project: str, execution_id: str, collection: str,
+        entry_id: str, cmd: dict,
+    ) -> Optional[str]:
+        """Apply a doc-authoring command. Returns a continue-prompt to keep looping, or
+        None to stop (paused on a question / finished on done)."""
+        ctype = cmd.get("type")
+        if ctype == "thinking":
+            text = str(cmd.get("text", "")).strip()
+            if text:
+                state = self.storage.set_activity(root, project, execution_id, text)
+                self.publish_progress(execution_id, "progress", state)
+            return "Continue."
+
+        if ctype == "question":
+            text = str(cmd.get("question") or "").strip()
+            state, _ = self.storage.add_question(
+                root, project, execution_id, text or "(empty question)", kind="question")
+            try:
+                self.storage.patch_metadata(
+                    root, project, collection, entry_id, {"executionBlocked": True})
+            except NotFoundError:
+                pass
+            self.publish_progress(execution_id, "question", state)
+            return None  # pause for the user
+
+        if ctype == "done":
+            body = cmd.get("body")
+            changed = isinstance(body, str) and body.strip() != ""
+            if changed:
+                self.storage.save_body(root, project, collection, entry_id, body)
+            reply = str(cmd.get("reply", "")).strip()
+            if reply:  # chat mode — record the assistant turn
+                self.storage.append_chat_message(
+                    root, project, collection, entry_id, "assistant", reply,
+                    revised_body=changed)
+            self._complete_doc(
+                root, project, execution_id, collection, entry_id,
+                str(cmd.get("summary", "")))
+            return None  # finished
+
+        return "Continue. Return a question or done command."
+
+    def _complete_doc(
+        self, root: str, project: str, execution_id: str, collection: str,
+        entry_id: str, summary: str,
+    ) -> None:
+        """Finish a doc-kind execution: completed (no in_review, no git commit), clear
+        flags. For a task-spec, infer the target repo (multi-repo) in the background."""
+        if summary:
+            self.storage.set_done_summary(root, project, execution_id, summary)
+        state = self.storage.set_execution_status(
+            root, project, execution_id, ProgressStatus.completed)
+        try:
+            self.storage.patch_metadata(
+                root, project, collection, entry_id,
+                {"executionError": False, "executionBlocked": False})
+        except NotFoundError:
+            pass
+        self.publish_progress(execution_id, "status", state)
+        if collection == "tasks":
+            self._spawn(self._infer_repo(root, project, entry_id))
+
+    async def _run_import(
+        self, root: str, project: str, execution_id: str, collection: str, entry_id: str,
+    ) -> None:
+        """Derive metadata for a verbatim-imported entry (body untouched), then complete.
+        Mirrors the former OperationManager import path, wrapped as an execution."""
+        try:
+            entry, body, _ = self.storage.read_document(root, project, collection, entry_id)
+            existing_tasks = None
+            if collection == "tasks":
+                existing_tasks = [
+                    {"id": t.id, "name": t.name, "description": t.description}
+                    for t in self.storage.read_metadata(root, project, "tasks").values()
+                    if t.id != entry_id and t.status != "removed"
+                ]
+            meta = await self.claude.derive_import_metadata(
+                root=root, project=project, body=body, doc_type=entry.type,
+                current_name=entry.name, existing_tasks=existing_tasks,
+            )
+            patch: dict = {"description": meta.get("description", "")}
+            if meta.get("name"):
+                patch["name"] = meta["name"]
+            if collection == "tasks":
+                if meta.get("task_group"):
+                    patch["taskGroup"] = meta["task_group"]
+                known = {t["id"] for t in (existing_tasks or [])}
+                deps = [d for d in meta.get("depends_on", []) if d in known]
+                if deps:
+                    patch["dependsOn"] = deps
+                status = meta.get("status", "")
+                if status in _IMPORT_STATUSES:
+                    patch["status"] = status
+            self.storage.patch_metadata(root, project, collection, entry_id, patch)
+            if collection == "tasks":
+                await self._infer_repo(root, project, entry_id)
+            self._complete_doc(root, project, execution_id, collection, entry_id, "")
+        except Exception as exc:  # noqa: BLE001 — surface to UI
+            self._set_error_entry(
+                root, project, execution_id, collection, entry_id, str(exc))
+
+    async def _infer_repo(self, root: str, project: str, entry_id: str) -> None:
+        """When a project has >1 repo (10), let the AI pick a task's target repo."""
+        repos = self.storage.read_repos(root, project).repos
+        if len(repos) <= 1:
+            return
+        try:
+            _, body, _ = self.storage.read_document(root, project, "tasks", entry_id)
+        except NotFoundError:
+            return
+        repo_id = await self.claude.infer_target_repo(
+            root=root, project=project, body=body, repos=repos)
+        self.storage.patch_metadata(root, project, "tasks", entry_id, {"repo": repo_id})
+
+    async def followup(
+        self, root: str, project: str, execution_id: str, message: str,
+    ) -> ProgressState:
+        """Reopen a completed doc execution to apply a follow-up instruction."""
+        prog = self.storage.read_progress(root, project, execution_id)
+        if prog is None:
+            raise NotFoundError(f"execution {execution_id} not found")
+        if execution_id in self._active:
+            return prog
+        entry, body, _ = self.storage.read_document(
+            root, project, prog.collection, prog.task_id)
+        self.storage.set_body_before(root, project, execution_id, body)
+        self._set_running(root, project, execution_id, prog.collection, prog.task_id, "Working…")
+        prompt = self.claude.render_author_prompt(
+            root, project, mode="followup", doc_type=entry.type, body=body,
+            message=message, name_hint=entry.name)
+        self._spawn_tracked(execution_id, self._run_doc(
+            root, project, execution_id, prog.collection, prog.task_id,
+            prompt, session_id=prog.session_id))
+        return self.storage.read_progress(root, project, execution_id)
 
     # ── Dependency chaining (build on in-review, pushed deps) ────────────────────
 
@@ -748,9 +1021,20 @@ class ExecutionManager:
         _, q = self.storage.answer_question(root, project, execution_id, question_id, answer)
         try:  # answering clears any blocker flag — the run resumes below
             self.storage.patch_metadata(
-                root, project, "tasks", prog.task_id, {"executionBlocked": False})
+                root, project, prog.collection, prog.task_id, {"executionBlocked": False})
         except NotFoundError:
             pass
+
+        # Doc-kind authoring: resume the doc loop with the answer (no git sync).
+        if prog.kind == ExecutionKind.doc.value:
+            lead = ("The user answered your question.\n\n"
+                    f"Question: {q.question}\nAnswer: {answer}\n\nContinue; return done "
+                    "with the full updated body when finished.")
+            self._spawn_tracked(execution_id, self._run_doc(
+                root, project, execution_id, prog.collection, prog.task_id,
+                lead, session_id=prog.session_id))
+            return self.storage.read_progress(root, project, execution_id)
+
         sync = self._sync_for_resume(root, project, execution_id)
         if q.kind == "issue":
             lead = (f"Regarding the issue you reported (\"{q.question}\"), the user "
@@ -818,10 +1102,40 @@ class ExecutionManager:
 
         try:
             self.storage.patch_metadata(
-                root, project, "tasks", prog.task_id,
+                root, project, prog.collection, prog.task_id,
                 {"executionError": False, "executionBlocked": False})
         except NotFoundError:
             pass
+
+        # Doc-kind authoring: re-ground the model on the current body and continue.
+        if prog.kind == ExecutionKind.doc.value:
+            cmd = read_transcript_command(prog.session_id) if prog.session_id else None
+            if cmd and cmd.get("type") == "question":
+                text = str(cmd.get("question") or "")
+                pending = [q for q in prog.pending_questions if q.answer is None]
+                if not any(q.question == text for q in pending):
+                    state, _ = self.storage.add_question(
+                        root, project, execution_id, text or "(empty question)",
+                        kind="question")
+                else:
+                    state = self.storage.set_execution_status(
+                        root, project, execution_id, ProgressStatus.awaiting_input)
+                self.publish_progress(execution_id, "question", state)
+                return state
+            entry, body, _ = self.storage.read_document(
+                root, project, prog.collection, prog.task_id)
+            self.storage.set_body_before(root, project, execution_id, body)
+            self._set_running(root, project, execution_id, prog.collection,
+                              prog.task_id, "Resuming…")
+            prompt = self.claude.render_author_prompt(
+                root, project, mode="followup", doc_type=entry.type, body=body,
+                message="The previous authoring run was interrupted before finishing. "
+                        "Finish it and return done with the full document.",
+                name_hint=entry.name)
+            self._spawn_tracked(execution_id, self._run_doc(
+                root, project, execution_id, prog.collection, prog.task_id,
+                prompt, session_id=prog.session_id))
+            return self.storage.read_progress(root, project, execution_id)
 
         if not prog.session_id:
             task = self.storage.get_entry(root, project, "tasks", prog.task_id)
@@ -894,13 +1208,28 @@ class ExecutionManager:
         prog = self.storage.read_progress(root, project, execution_id)
         if prog is None:
             raise NotFoundError(f"execution {execution_id} not found")
+        import shutil
+
+        # Doc-kind: no worktree/workspace; just drop the dir + unlink from the entry.
+        if prog.kind == ExecutionKind.doc.value:
+            shutil.rmtree(
+                paths.execution_dir(root, project, execution_id), ignore_errors=True)
+            try:
+                entry = self.storage.get_entry(root, project, prog.collection, prog.task_id)
+                if entry.authoring_execution_id == execution_id:
+                    self.storage.patch_metadata(
+                        root, project, prog.collection, prog.task_id,
+                        {"authoringExecutionId": None, "executionError": False,
+                         "executionBlocked": False})
+            except NotFoundError:
+                pass
+            return
 
         # Deregister linked worktrees, then delete the whole execution directory.
         worktree.remove_workspace(
             root, str(paths.workspace_path(root, project, execution_id)))
         worktree.remove_workspace(
             root, str(paths.worktree_path(root, project, execution_id)))
-        import shutil
         shutil.rmtree(paths.execution_dir(root, project, execution_id), ignore_errors=True)
 
         try:
@@ -943,13 +1272,30 @@ class ExecutionManager:
 
     async def diff(self, root: str, project: str, execution_id: str) -> dict:
         prog = self.storage.read_progress(root, project, execution_id)
-        if prog is None or not prog.base_sha:
+        if prog is None:
+            raise NotFoundError(f"execution {execution_id} not found")
+        if prog.kind == ExecutionKind.doc.value:
+            return self._doc_diff(root, project, prog)
+        if not prog.base_sha:
             raise NotFoundError(f"execution {execution_id} not found")
         wt = self._workspace_layout(root, project, execution_id)["target_dir"]
         # The workspace may have been pruned (task done + PR merged, 10) — no diff then.
         if not os.path.isdir(wt):
             return {"baseSha": prog.base_sha, "headSha": "", "files": []}
         return worktree.diff(wt, prog.base_sha)
+
+    def _doc_diff(self, root: str, project: str, prog: ProgressState) -> dict:
+        """Per-doc diff for a doc-kind execution: the body snapshot taken when the run
+        (re)started vs the current body (08 diff shape, one synthetic file)."""
+        before = prog.body_before or ""
+        path = "document.md"
+        try:
+            entry, after, _ = self.storage.read_document(
+                root, project, prog.collection, prog.task_id)
+            path = entry.file
+        except NotFoundError:
+            after = ""
+        return _text_diff(path, before, after)
 
     # ── Startup recovery ─────────────────────────────────────────────────────────
 
@@ -962,8 +1308,8 @@ class ExecutionManager:
             for eid in self.storage.list_executions(proj.root, proj.name):
                 prog = self.storage.read_progress(proj.root, proj.name, eid)
                 if prog and prog.status == ProgressStatus.running.value:
-                    self._set_error(
-                        proj.root, proj.name, eid, prog.task_id,
+                    self._set_error_entry(
+                        proj.root, proj.name, eid, prog.collection, prog.task_id,
                         "interrupted — the server restarted while this was running. "
                         "Click Try again to resume.")
 
@@ -989,6 +1335,21 @@ class ExecutionManager:
 def _uuid() -> str:
     import uuid
     return str(uuid.uuid4())
+
+
+def _text_diff(path: str, before: str, after: str) -> dict:
+    """A Build-diff-shaped result ({baseSha, headSha, files:[{path,status,diff}]}) for a
+    single text document — used for the per-doc snapshot diff (doc-kind executions)."""
+    if before == after:
+        return {"baseSha": "", "headSha": "", "files": []}
+    patch = "".join(difflib.unified_diff(
+        before.splitlines(keepends=True), after.splitlines(keepends=True),
+        fromfile=f"a/{path}", tofile=f"b/{path}"))
+    if before and not before.endswith("\n"):
+        patch += "\n\\ No newline at end of file\n"
+    status = "A" if not before else ("D" if not after else "M")
+    return {"baseSha": "", "headSha": "", "files": [
+        {"path": path, "status": status, "diff": patch}]}
 
 
 def _repo_dirnames(repos) -> dict[str, str]:

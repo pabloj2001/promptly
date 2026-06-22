@@ -28,7 +28,7 @@ from typing import Optional
 from ..models import CamelModel, Comment, DocType, PermissionRequest
 from ..storage import StorageService
 from ..storage import paths
-from .exec_protocol import COMMAND_SCHEMA, PLAN_SCHEMA
+from .exec_protocol import COMMAND_SCHEMA, DOC_COMMAND_SCHEMA, PLAN_SCHEMA
 from .permissions import build_cli_permissions
 from .prompts import PromptLibrary
 
@@ -441,6 +441,54 @@ class ClaudeService:
         if session_id:
             args += ["--resume", session_id]
         return RunSpec(args=args, env=env, cwd=worktree)
+
+    # ── Doc-authoring sessions (unified executions) ──────────────────────────────
+
+    def build_doc_command(
+        self, root: str, project: str, *, execution_id: str, prompt: str,
+        session_id: Optional[str] = None,
+    ) -> RunSpec:
+        """Compile a doc-authoring ``claude -p`` turn: the read-only **generation**
+        profile (research with Read/Grep, no writes — the body comes back in the
+        ``done`` command, the engine applies it) plus the doc command schema and
+        stream-json, resumed across turns. No worktree, no PreToolUse hook."""
+        cfg = self.storage.read_permissions(root, project)
+        cli = build_cli_permissions(cfg, "generation", repo_root=root)
+        args = [
+            self.cli, "-p", prompt,
+            "--output-format", "stream-json", "--verbose",
+            "--model", self.default_model,
+            "--settings", cli.settings_json,
+            "--permission-mode", cli.permission_mode,
+            "--json-schema", json.dumps(DOC_COMMAND_SCHEMA),
+        ]
+        for d in cli.add_dirs:
+            args += ["--add-dir", d]
+        if session_id:
+            args += ["--resume", session_id]
+        env = {**os.environ, "PYTHONPATH": str(_APP_ROOT)}
+        return RunSpec(args=args, env=env, cwd=root)
+
+    def render_author_prompt(
+        self, root: str, project: str, *, mode: str, doc_type: DocType | str,
+        user_request: str = "", body: str = "", message: str = "",
+        comments: Optional[list[dict]] = None, name_hint: Optional[str] = None,
+    ) -> str:
+        type_val = doc_type.value if isinstance(doc_type, DocType) else doc_type
+        return self.prompts.render(
+            "author_doc",
+            project_name=project,
+            project_path=self._project_path(root, project),
+            repo_root=root,
+            mode=mode,
+            doc_type=type_val,
+            user_request=user_request,
+            body=body[:_BODY_BUDGET],
+            message=message,
+            comments=comments or [],
+            name_hint=name_hint,
+            instructions=self.storage.read_settings(root, project).instructions,
+        )
 
     # ── Mode A — generation ──────────────────────────────────────────────────────
 

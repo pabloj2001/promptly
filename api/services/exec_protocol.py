@@ -54,6 +54,26 @@ COMMAND_SCHEMA: dict = {
     "required": ["type"],
 }
 
+# Doc-authoring turn schema (unified executions): a much smaller command set than the
+# build loop. The model researches within a turn (Read/Grep) then returns either a
+# ``question`` (pause for the user) or ``done`` with the full updated body (and, for
+# chat, a short ``reply``). ``thinking`` is an optional surfaced progress note.
+# All three types are a subset of COMMAND_TYPES, so command_from_result_event /
+# read_transcript_command parse doc commands unchanged.
+DOC_COMMAND_TYPES = ["thinking", "question", "done"]
+DOC_COMMAND_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "type": {"type": "string", "enum": DOC_COMMAND_TYPES},
+        "question": {"type": "string"},
+        "body": {"type": "string"},
+        "reply": {"type": "string"},
+        "summary": {"type": "string"},
+        "text": {"type": "string"},
+    },
+    "required": ["type"],
+}
+
 # Schema for the planning phase (07): a one-shot call that returns the ordered step list.
 PLAN_SCHEMA: dict = {
     "type": "object",

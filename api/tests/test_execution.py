@@ -8,7 +8,9 @@ and the PreToolUse hook decisions — without spawning a real ``claude`` process
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os as _os
 import subprocess
 import sys
 
@@ -1001,3 +1003,181 @@ def test_real_execution_end_to_end(tmp_path):
             os.environ.pop("PROMPTLY_HOME", None)
         else:
             os.environ["PROMPTLY_HOME"] = _prev_home
+
+
+# ── doc-authoring executions (unified executions) ────────────────────────────────
+
+
+def _doc_claude(first: dict, resumed: dict | None = None):
+    """A FakeClaude whose doc turn emits ``first`` (or ``resumed`` once a session
+    exists) as the structured-output command, with session id ``sd1``."""
+
+    def _script(cmd: dict) -> str:
+        payload = json.dumps(cmd)
+        return (
+            "import json;"
+            "print(json.dumps({'type':'system','subtype':'init','session_id':'sd1'}));"
+            "print(json.dumps({'type':'result','session_id':'sd1','structured_output':"
+            f"json.loads(r'''{payload}''')}}))"
+        )
+
+    class FakeClaude:
+        def render_author_prompt(self, *a, **k):
+            return "prompt"
+
+        def build_doc_command(self, root, project, *, execution_id, prompt, session_id=None):
+            cmd = (resumed if (resumed is not None and session_id) else first)
+            return RunSpec(args=[sys.executable, "-c", _script(cmd)],
+                           env=dict(_os.environ), cwd=root)
+
+    return FakeClaude()
+
+
+async def _settle(em: ExecutionManager) -> None:
+    for _ in range(50):
+        if not em._tasks:
+            return
+        await asyncio.gather(*list(em._tasks))
+
+
+async def test_doc_authoring_generate_writes_body_and_completes(storage, root):
+    storage.create_project("Demo", root)
+    doc = storage.create_entry(root, "Demo", type="doc", display_name="Spec", body="")
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    em.claude = _doc_claude({"type": "done", "body": "# Title\nHello", "summary": "wrote it"})
+
+    await em.start_authoring(root, "Demo", "docs", doc.id, mode="generate",
+                             message="write a spec")
+    await _settle(em)
+
+    entry = storage.get_entry(root, "Demo", "docs", doc.id)
+    assert entry.authoring_execution_id  # linked, reusable
+    prog = storage.read_progress(root, "Demo", entry.authoring_execution_id)
+    assert prog.kind == "doc"
+    assert prog.status == ProgressStatus.completed.value  # auto-complete, no in_review
+    assert prog.done_summary == "wrote it"
+    _, body, _ = storage.read_document(root, "Demo", "docs", doc.id)
+    assert "Hello" in body
+
+
+async def test_doc_authoring_reuses_one_execution_per_entry(storage, root):
+    storage.create_project("Demo", root)
+    doc = storage.create_entry(root, "Demo", type="doc", display_name="Spec", body="")
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    em.claude = _doc_claude({"type": "done", "body": "v1", "summary": ""})
+
+    await em.start_authoring(root, "Demo", "docs", doc.id, mode="generate", message="x")
+    await _settle(em)
+    eid1 = storage.get_entry(root, "Demo", "docs", doc.id).authoring_execution_id
+
+    await em.start_authoring(root, "Demo", "docs", doc.id, mode="generate", message="y")
+    await _settle(em)
+    eid2 = storage.get_entry(root, "Demo", "docs", doc.id).authoring_execution_id
+    assert eid1 == eid2  # reopened, not a new execution
+
+
+async def test_doc_authoring_question_pauses_then_answer_resumes(storage, root):
+    storage.create_project("Demo", root)
+    doc = storage.create_entry(root, "Demo", type="doc", display_name="Spec", body="")
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    em.claude = _doc_claude(
+        {"type": "question", "question": "What scope?"},
+        resumed={"type": "done", "body": "scoped", "summary": "done"})
+
+    await em.start_authoring(root, "Demo", "docs", doc.id, mode="generate", message="x")
+    await _settle(em)
+
+    eid = storage.get_entry(root, "Demo", "docs", doc.id).authoring_execution_id
+    prog = storage.read_progress(root, "Demo", eid)
+    assert prog.status == ProgressStatus.awaiting_input.value
+    assert storage.get_entry(root, "Demo", "docs", doc.id).execution_blocked
+    q = prog.pending_questions[-1]
+
+    await em.answer(root, "Demo", eid, q.id, "narrow")
+    await _settle(em)
+    prog = storage.read_progress(root, "Demo", eid)
+    assert prog.status == ProgressStatus.completed.value
+    assert not storage.get_entry(root, "Demo", "docs", doc.id).execution_blocked
+
+
+async def test_doc_diff_from_snapshot(storage, root):
+    storage.create_project("Demo", root)
+    doc = storage.create_entry(root, "Demo", type="doc", display_name="Spec",
+                               body="old line\n")
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    em.claude = _doc_claude({"type": "done", "body": "new line\n", "summary": ""})
+
+    await em.start_authoring(root, "Demo", "docs", doc.id, mode="generate", message="x")
+    await _settle(em)
+
+    eid = storage.get_entry(root, "Demo", "docs", doc.id).authoring_execution_id
+    out = await em.diff(root, "Demo", eid)
+    assert len(out["files"]) == 1
+    assert "new line" in out["files"][0]["diff"]
+    assert "old line" in out["files"][0]["diff"]
+
+
+async def test_doc_authoring_failure_flags_entry(storage, root):
+    storage.create_project("Demo", root)
+    doc = storage.create_entry(root, "Demo", type="doc", display_name="Spec", body="")
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+
+    class FakeClaude:
+        def render_author_prompt(self, *a, **k):
+            return "p"
+
+        def build_doc_command(self, root, project, *, execution_id, prompt, session_id=None):
+            return RunSpec(
+                args=[sys.executable, "-c",
+                      "import sys; sys.stderr.write('docfail'); sys.exit(1)"],
+                env=dict(_os.environ), cwd=root)
+
+    em.claude = FakeClaude()
+    await em.start_authoring(root, "Demo", "docs", doc.id, mode="generate", message="x")
+    await _settle(em)
+
+    eid = storage.get_entry(root, "Demo", "docs", doc.id).authoring_execution_id
+    prog = storage.read_progress(root, "Demo", eid)
+    assert prog.status == ProgressStatus.failed.value
+    assert storage.get_entry(root, "Demo", "docs", doc.id).execution_error
+
+
+async def test_delete_doc_execution_clears_link(storage, root):
+    from api.storage import paths
+
+    storage.create_project("Demo", root)
+    doc = storage.create_entry(root, "Demo", type="doc", display_name="Spec", body="")
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+    em.claude = _doc_claude({"type": "done", "body": "x", "summary": ""})
+    await em.start_authoring(root, "Demo", "docs", doc.id, mode="generate", message="x")
+    await _settle(em)
+
+    eid = storage.get_entry(root, "Demo", "docs", doc.id).authoring_execution_id
+    await em.delete_execution(root, "Demo", eid)
+    assert not paths.execution_dir(root, "Demo", eid).exists()
+    assert storage.get_entry(root, "Demo", "docs", doc.id).authoring_execution_id is None
+
+
+async def test_doc_import_derives_metadata(storage, root):
+    storage.create_project("Demo", root)
+    doc = storage.create_entry(root, "Demo", type="doc", display_name="Raw",
+                               body="# Imported\nbody")
+    em = ExecutionManager(storage, SSEBus(), claude=None)
+
+    class FakeClaude:
+        async def derive_import_metadata(self, *, root, project, body, doc_type,
+                                         current_name="", existing_tasks=None):
+            return {"name": "Nice Name", "description": "a desc", "task_group": "",
+                    "depends_on": [], "status": ""}
+
+    em.claude = FakeClaude()
+    await em.start_authoring(root, "Demo", "docs", doc.id, mode="import")
+    await _settle(em)
+
+    entry = storage.get_entry(root, "Demo", "docs", doc.id)
+    assert entry.name == "Nice Name"
+    assert entry.description == "a desc"
+    prog = storage.read_progress(root, "Demo", entry.authoring_execution_id)
+    assert prog.status == ProgressStatus.completed.value
+    _, body, _ = storage.read_document(root, "Demo", "docs", doc.id)
+    assert "Imported" in body  # body untouched by import
