@@ -39,28 +39,23 @@ and partial updates are O(1) and merge-friendlier.
     ],
     "dependsOn": ["<id>", "<id>"],         // 7. ids this depends on
     "custom": { "jira": "PROJ-3", "assignee": "pablo" }, // 8. arbitrary user kv
-    "executionId": "<execution-id|null>",  // 9. active/last execution
+    "executionId": "<execution-id|null>",  // 9. active/last task BUILD execution
+    "authoringExecutionId": "<id|null>",   // 10. reusable doc-kind authoring execution (07)
     "file": "tasks/set-up-auth.md",        // relative path to the md body
-    "operation": {                          // 10. in-flight AI op, else null (03/05)
-      "type": "generate",                   //     "generate" | "chat" | "address"
-      "status": "running",                  //     "running" | "failed"
-      "startedAt": "ISO8601",
-      "error": null
-    },
     "createdAt": "ISO8601",
     "updatedAt": "ISO8601"
   }
 }
 ```
 
-### Async operations (`operation`)
-AI authoring/editing is asynchronous (03/05). While a doc is being generated or edited, its
-entry carries a non-null `operation`; it's `null` otherwise. This is **persisted** so a page
-refresh still shows the loading state, and changes are broadcast over an operations SSE
-stream (02). A **brand-new** doc gets a metadata entry with an empty body and
-`operation.status=running` the instant generation starts, so it appears in the sidebar (with
-a spinner) immediately; the body/metadata fill in on completion. On failure, `status` is set
-to `failed` with an `error` message until the user retries.
+### Async authoring (unified executions)
+AI authoring/editing is asynchronous (03/05/07). It now runs as a **doc-kind execution**
+(`ExecutionManager`), one reusable execution per entry referenced by `authoringExecutionId`
+— the Design tab observes it via `/executions/{id}/stream`, and its `progress.json` persists
+the running/awaiting/failed/completed state across refreshes. *(This replaced the old
+per-entry `operation` field + `OperationManager` + `/operations/stream`, all removed.)* A
+brand-new doc gets a metadata entry with an empty body the instant authoring starts, so it
+appears in the sidebar with a spinner; body/metadata fill in on the execution's `done`.
 
 ### Status enum (canonical, used app-wide)
 `pending | in_progress | in_review | blocked | done | removed`

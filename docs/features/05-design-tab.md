@@ -33,17 +33,19 @@ creation is always prompt-driven.
 (`⟳` = a doc with an operation in progress.)
 
 ## Loading states (async authoring)
-A doc/task carries an `operation` ({type, status} — 01) while AI is generating or editing it:
-- **Sidebar:** show a small **loading spinner beside the name** of any doc with a running
-  operation. The user can navigate elsewhere while it runs.
-- **Brand-new doc** (created by a prompt): a placeholder entry appears in the sidebar
-  immediately (with spinner). If selected, the main view shows a **blank loading state**
-  (the body doesn't exist yet).
-- **Existing doc being edited** (chat edit / address): if selected, render the current doc
-  with a **banner** ("Changes in progress…") and **disable editing/commenting** until the
-  operation completes.
-- On completion the SSE event clears the operation; the body/metadata refresh in place. On
-  failure, surface the error and clear the operation so the user can retry.
+Each entry has one reusable **authoring execution** (`authoringExecutionId`, a doc-kind
+execution — 01/07) driving its AI state; the Design tab subscribes via
+`useExecutionStream(authoringExecutionId)`:
+- **Sidebar:** show a small **loading spinner beside the name** while that execution is
+  `running`/`awaiting_input` (and a ⚠ on `failed`). The user can navigate elsewhere while it runs.
+- **Brand-new doc** (created by a prompt): the entry appears in the sidebar immediately (with
+  spinner). If selected, the main view shows a **blank loading state** (body not written yet).
+- **Existing doc being edited** (chat / address / follow-up): render the current doc with a
+  **banner** showing the live activity and **disable editing/commenting** until it finishes; a
+  `question` shows an inline answer box (`awaiting_input`).
+- On completion the execution stream refreshes the body/metadata in place and the banner offers
+  **View changes** (the per-doc diff) + a **Follow up** box. On `failure`, surface the error +
+  a **Try again** button.
 
 ## Left sidebar
 - **Metadata section (top):** shows the open doc's metadata (name, type, description,

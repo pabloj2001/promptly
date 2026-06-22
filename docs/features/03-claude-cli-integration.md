@@ -92,11 +92,16 @@ denied. The system prompt (a Jinja2 template, 09) instructs Claude to **read fir
 `CLAUDE.md` files, the project spec, related task specs and docs, and the relevant source —
 then produce the document. Claude returns text; *we* write the files (it cannot write).
 
-**Runs as a background operation.** Authoring is slow, so these calls don't block the HTTP
-request. The API creates/marks the target with an `operation` (01) and returns immediately;
-ClaudeService runs in a background task; on completion we write the result, clear the
-operation, and publish an event over the operations SSE stream (02). The Design tab shows a
-loading state meanwhile (05).
+**Runs as a doc-authoring execution.** Authoring is slow, so these calls don't block the HTTP
+request. As of the *unified executions* change, all authoring (generate / import / chat /
+address-comments / follow-up) runs as a **doc-kind execution** owned by `ExecutionManager`
+(see [07](./07-execution-engine.md)) — one reusable execution per entry, linked via
+`authoringExecutionId`. The endpoint starts/reopens it and returns immediately; progress
+streams over that execution's SSE (`/executions/{id}/stream`) and the Design tab shows the
+in-progress / question / error / completed-with-diff state. (This replaced the old
+`OperationManager` + per-entry `operation` field + `/operations/stream`.) The CLI specifics
+below — prompts, read-only generation profile, lenient JSON parsing — are unchanged; the
+difference is the body comes back in the execution's `done` command and the engine writes it.
 
 - **Create a doc/task from a prompt** (`generate_doc`/`generate_task` templates). For a brand-
   new item the API first creates a placeholder metadata entry with `operation.status=running`
@@ -112,10 +117,10 @@ loading state meanwhile (05).
   full repo read access. A turn may **revise the doc body** (the AI is its author); the
   updated body is written and the doc shows the in-progress state while the turn runs.
   Highlight → "Ask AI" feeds the quoted span into this chat (05).
-- **Address comments** (`address_comments` template). Batch-revise the doc to address its
-  unresolved highlight comments; input = current body + unresolved comments (with quoted
-  anchors). Returns a proposed revision for preview; on accept the body is replaced and
-  addressed comments marked `resolved` (05).
+- **Address comments** (`comment` authoring mode). Revise the doc to address its unresolved
+  highlight comments; input = current body + unresolved comments (with quoted anchors). Runs as
+  a doc execution that writes the revised body directly (the per-doc diff shows the change);
+  comments are re-anchored on save (05/07).
 - **Plan tasks from the spec** (`plan_tasks` template). Reads the project spec + repo and
   returns a **task breakdown** as a JSON list of stubs `{name, description, taskGroup,
   dependsOn:[names]}`. The API creates a placeholder per stub (resolving `dependsOn` names →
@@ -125,10 +130,10 @@ loading state meanwhile (05).
 > **Import writes the body verbatim, then fills metadata with AI.** Importing a doc or task
 > (paste/upload one or more files, 05) writes each provided body **verbatim** (no AI touches the
 > body), routing by the chosen type (doc vs. task). It then kicks off a **background
-> metadata-only generation op** (`import_metadata` template → `ClaudeService.
-> derive_import_metadata`) that reads the body + repo and patches `description` (and, for tasks,
-> `taskGroup`); the body is never modified. Reuses the operations SSE + `operation` running flag
-> like normal generation.
+> metadata-only doc execution** (`import` mode → `ClaudeService.derive_import_metadata`) that
+> reads the body + repo and patches `name`/`description` (and, for tasks, `taskGroup`,
+> conservative `dependsOn`/`status`, and the target repo); the body is never modified. Surfaces
+> as a doc-authoring execution like normal generation (07).
 
 ## Mode B — stateful execution session (turn-based, structured-output protocol)
 Used by the Execution Engine ([07](./07-execution-engine.md)). The build session is **not** a

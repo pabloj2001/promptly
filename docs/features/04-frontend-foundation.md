@@ -73,12 +73,13 @@ First screen if no active project (and reachable from a menu).
 - `Modal`, `Toast`, `ConfirmDialog`, `Spinner`.
 
 ## SSE helpers (`lib/sse.ts`)
-Wrap `EventSource` for the two streams:
+Streams are all per-execution now (the old per-project operations stream is gone):
 - `useExecutionStream(id)` — `GET /executions/{id}/stream`; updates the execution's cache as
-  `step`/`question`/`permission`/`status` events arrive. Used by Build (08).
-- `useOperationsStream()` — `GET /operations/stream?project=`; on each `operation` event,
-  updates/invalidates the affected doc/task so the Design tab's loading states resolve live
-  (01/05). Subscribed once at the project level.
+  `step`/`question`/`permission`/`status` events arrive, and on `status` invalidates the
+  doc/task lists + the entry + the execution list. Used by Build (08) **and** by the Design
+  tab for an entry's authoring execution (07).
+- `useExecutions()` / `useExecutionsLive()` — `GET /executions`; the list the Build tab buckets
+  and the Design/Plan tabs poll to refresh entries live as authoring runs finish.
 
 ## Implementation steps
 1. Vite + TS + providers; status color map + `StatusBadge`.

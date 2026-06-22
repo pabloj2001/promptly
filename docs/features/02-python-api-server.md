@@ -82,10 +82,14 @@ plus:
   placeholder per task (resolving deps), starts each task's body generation in the background,
   and returns the placeholders. Surfaced when a project has no tasks yet (05/06).
 
-### Operations stream
-- `GET /operations/stream?project=` → **SSE** of doc/task operation events so the Design tab
-  shows live loading states (01/05): `event: operation  data: {entryId, type, status, error?}`.
-  Backed by an in-memory per-project pub/sub (same pattern as the execution bus).
+### Authoring executions (was: operations stream)
+Doc/task authoring (create / import / chat / address-comments / follow-up) now runs as
+**doc-kind executions** (see [07](./07-execution-engine.md)), not the old `OperationManager`.
+`GET /operations/stream` and the per-entry `operation` field are **removed**; the Design tab
+subscribes to each entry's authoring execution via `/executions/{id}/stream`, and
+`GET /executions` lists all executions. Authoring endpoints (`POST /docs`, `/docs/import`,
+`/{coll}/{id}/chat`, `/{coll}/{id}/address`, `POST /tasks`, `/tasks/generate-from-spec`) start
+or reopen the entry's authoring execution and return immediately.
 
 ### Metadata / custom fields
 - `PUT  /tasks/{id}/metadata` and `/docs/{id}/metadata` → patch any metadata field,

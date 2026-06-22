@@ -27,6 +27,37 @@ connectivity, CLI crash) or a server restart marks the execution `failed` with t
 resumes with **Try again** (`POST /executions/{id}/resume`). All state lives on disk, so this
 survives a server restart. uvicorn stays the single writer of `progress.json`.
 
+## Unified executions: task builds **and** doc authoring
+
+An *execution* is the single model for **every** long-running AI process, distinguished by
+`ProgressState.kind`:
+
+- **`task`** (this doc's main subject) — the heavy build flow: git worktree/workspace, a
+  planning phase, the turn loop with steps, a PR, and finalize-to-`in_review`. Linked from the
+  task via `executionId`. Reusable for follow-up work via feedback.
+- **`doc`** — **authoring** a `project_spec` / `doc` / `task`-spec entry (writing it, importing
+  it, doc chat, addressing comments, follow-ups). Linked from the entry via
+  `authoringExecutionId` — **one reusable execution per entry**, reopened for each subsequent
+  action. No worktree/steps/PR. The CLI runs under the read-only **generation** profile and
+  returns the new body in its command (the engine writes it); a `done` **auto-completes**
+  (running → `completed`, *skipping* `in_review`). This replaced the old `OperationManager` +
+  the transient `operation` field on entries.
+
+**Doc turn loop** (`ExecutionManager.start_authoring(mode=…)` → `_run_doc`): a smaller command
+set — `question` (pause for input), `done {body, name?, description?, reply?, summary?}`
+(write + complete), `thinking` (surfaced note). `import` mode is a one-shot metadata
+derivation wrapped as an execution. `followup` (`POST /executions/{id}/followup`) reopens a
+completed doc execution.
+
+**Per-doc diff.** Doc executions have no git; the body is snapshotted into
+`progress.bodyBefore` when the run (re)starts, and `GET /executions/{id}/diff` returns a
+synthesized single-file unified diff of that snapshot vs the current body.
+
+**Surfacing.** Doc executions appear inline in the **Design** tab (spinner + live activity,
+question box, error + Try again, completed diff + follow-up) *and* in the **Build** tab's
+*Ongoing*/*Done* sections (opening them jumps to Design). *In review* and *Up next* stay
+tasks-only. `GET /executions` lists all executions for the tab to bucket.
+
 ## Lifecycle
 ```
 pending ──start──▶ in_progress ──done cmd──▶ in_review
